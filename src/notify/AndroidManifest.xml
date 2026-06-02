@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="app.firewall.notify"
-    android:versionCode="2"
-    android:versionName="1.0.2">
+    android:versionCode="3"
+    android:versionName="1.0.3">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="32" />
 
@@ -19,6 +19,11 @@
             android:exported="true"
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".NotifyService"
+            android:directBootAware="true"
+            android:exported="true" />
 
         <receiver
             android:name=".NotifyReceiver"
