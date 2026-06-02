@@ -8,6 +8,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -52,7 +53,7 @@ public final class NotifyHelper {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
         PendingIntent settingsPi = PendingIntent.getActivity(
                 context, pkg.hashCode() + 1, openNetworkIntent(context, pkg), flags);
-        PendingIntent allowPi = PendingIntent.getActivity(
+        PendingIntent allowPi = PendingIntent.getBroadcast(
                 context, pkg.hashCode() + 2, allowIntent(context, pkg), flags);
 
         Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID)
@@ -100,25 +101,41 @@ public final class NotifyHelper {
     }
 
     static Intent allowIntent(Context context, String pkg) {
-        Intent intent = new Intent(context, AllowActivity.class);
+        Intent intent = new Intent(AllowReceiver.ACTION_ALLOW_NETWORK);
+        intent.setClass(context, AllowReceiver.class);
         intent.putExtra(EXTRA_PACKAGE, pkg);
+        intent.setPackage(context.getPackageName());
         return intent;
     }
 
     static Intent openNetworkIntent(Context context, String pkg) {
         Intent intent = new Intent(context, OpenNetworkActivity.class);
         intent.putExtra(EXTRA_PACKAGE, pkg);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return intent;
     }
 
+    /** Opens per-app "Mobile data & Wi‑Fi" / data usage (not app-info parent screen). */
     static Intent buildDataSettingsIntent(Context context, String pkg) {
+        Uri packageUri = Uri.parse("package:" + pkg);
+        ComponentName appDataUsage = new ComponentName(
+                "com.android.settings",
+                "com.android.settings.datausage.AppDataUsageActivity");
+
         Intent[] candidates = new Intent[] {
+                new Intent("android.settings.IGNORE_BACKGROUND_DATA_RESTRICTIONS_SETTINGS")
+                        .setData(packageUri)
+                        .setComponent(appDataUsage),
+                new Intent("android.settings.IGNORE_BACKGROUND_DATA_RESTRICTIONS_SETTINGS")
+                        .setData(packageUri),
+                new Intent(Intent.ACTION_MANAGE_NETWORK_USAGE)
+                        .setData(packageUri)
+                        .addCategory(Intent.CATEGORY_DEFAULT),
                 new Intent("android.settings.APP_DATA_USAGE")
+                        .setData(packageUri)
                         .putExtra("android.intent.extra.PACKAGE_NAME", pkg),
-                new Intent("android.intent.action.MANAGE_NETWORK_USAGE")
-                        .setData(Uri.parse("package:" + pkg)),
                 new Intent("android.settings.APPLICATION_DETAILS_SETTINGS")
-                        .setData(Uri.parse("package:" + pkg)),
+                        .setData(packageUri),
         };
         PackageManager pm = context.getPackageManager();
         for (Intent intent : candidates) {
@@ -127,7 +144,9 @@ public final class NotifyHelper {
                 return intent;
             }
         }
-        return candidates[candidates.length - 1];
+        Intent fallback = candidates[0];
+        fallback.setComponent(appDataUsage);
+        return fallback;
     }
 
     private static String resolveAppLabel(Context context, String pkg) {
