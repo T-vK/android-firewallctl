@@ -2,9 +2,6 @@
 # On-device wrapper for firewallctl.
 # Install: push to /data/local/tmp/ together with firewallctl.dex.jar,
 # or via the Magisk module overlay at /system/bin/.
-#
-# When invoked as bare "firewallctl" on PATH, dirname "$0" is "." and the
-# dex jar is not found unless we prefer the Magisk overlay path.
 if [ -f /system/bin/firewallctl.dex.jar ]; then
     JAR=/system/bin/firewallctl.dex.jar
 else
@@ -16,4 +13,11 @@ if [ ! -f "$JAR" ]; then
     exit 1
 fi
 export CLASSPATH="$JAR"
+
+if [ "$1" = "notify-blocked" ]; then
+    shift
+    exec app_process /system/bin --nice-name=firewallctl-notify \
+        app.firewallctl.BlockedAppNotifier "$@"
+fi
+
 exec app_process /system/bin --nice-name=firewallctl app.firewallctl.Main "$@"

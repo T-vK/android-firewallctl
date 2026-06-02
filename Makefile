@@ -39,7 +39,18 @@ VERSION_CODE := $(shell echo $(CLEAN_VER) | awk -F. '{printf "%d", ($$1*1000000)
 MAGISK_ZIP   := $(OUT_DIR)/firewall_default_deny_v$(VERSION).zip
 DIST_DEX_JAR := $(OUT_DIR)/firewallctl-$(VERSION).dex.jar
 
-SOURCES      := $(shell find $(SRC_DIR) -name '*.java')
+CORE_SRCS    := $(SRC_DIR)/app/firewallctl/Main.java
+ANDROID_SRCS := $(SRC_DIR)/app/firewallctl/BlockedAppNotifier.java \
+                $(SRC_DIR)/app/firewallctl/NotifyReceiver.java
+SOURCES      := $(CORE_SRCS) $(ANDROID_SRCS)
+
+ANDROID_JAR  ?= $(firstword \
+                  $(wildcard $(ANDROID_HOME)/platforms/android-35/android.jar) \
+                  $(wildcard $(ANDROID_HOME)/platforms/android-34/android.jar) \
+                  $(wildcard $(ANDROID_HOME)/platforms/android-33/android.jar) \
+                  $(wildcard $(ANDROID_SDK_ROOT)/platforms/android-34/android.jar) \
+                  $(wildcard /opt/android-sdk/platforms/android-34/android.jar))
+
 
 # Tool discovery: prefer PATH, then $ANDROID_HOME / $ANDROID_SDK_ROOT.
 # If neither d8 nor dx is found, the build will fetch R8 from Maven Central.
@@ -81,7 +92,15 @@ $(R8_JAR):
 
 $(CLASSES_DIR)/.stamp: $(SOURCES)
 	@mkdir -p $(CLASSES_DIR)
-	$(JAVAC) -source 1.8 -target 1.8 -Xlint:-options -d $(CLASSES_DIR) $(SOURCES)
+	$(JAVAC) -source 1.8 -target 1.8 -Xlint:-options -d $(CLASSES_DIR) $(CORE_SRCS)
+	@if [ -n "$(ANDROID_JAR)" ] && [ -f "$(ANDROID_JAR)" ]; then \
+	    echo "  JAVAC    notification helpers (android.jar)"; \
+	    $(JAVAC) -source 1.8 -target 1.8 -Xlint:-options \
+	        -classpath "$(ANDROID_JAR):$(CLASSES_DIR)" \
+	        -d $(CLASSES_DIR) $(ANDROID_SRCS); \
+	else \
+	    echo "warning: ANDROID_JAR not found; notifications disabled in build"; \
+	fi
 	@touch $@
 
 $(JAR): $(CLASSES_DIR)/.stamp

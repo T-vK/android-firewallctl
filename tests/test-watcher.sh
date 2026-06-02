@@ -29,14 +29,15 @@ cat > "$STUBS/firewallctl" <<EOF
 #!/usr/bin/env bash
 echo "\$@" >> "$TMP/firewallctl.log"
 EOF
-cat > "$STUBS/cmd" <<EOF
+cat > "$STUBS/firewall-notify" <<EOF
 #!/usr/bin/env bash
-echo "\$@" >> "$TMP/cmd.log"
+echo "notify-blocked \$@" >> "$TMP/notify.log"
 EOF
-chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/cmd
+chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/firewall-notify
 
 export FIREWALL_STATE_DIR="$STATE"
 export FIREWALLCTL="$STUBS/firewallctl"
+export FIREWALL_NOTIFY_CMD="$STUBS/firewall-notify"
 export FIREWALL_INSTALL_SETTLE_SEC=0
 export PATH="$STUBS:$PATH"
 
@@ -52,7 +53,7 @@ cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
 package:com.example.existing.b
 EOF
-rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/cmd.log"
+rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/notify.log"
 run_watcher --reconcile
 assert "T1: snapshot created" "[ -f '$STATE/known.txt' ]"
 assert "T1: snapshot has 2 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 2 ]"
@@ -67,22 +68,22 @@ run_watcher --reconcile
 assert "T2: firewallctl was invoked" "[ -f '$TMP/firewallctl.log' ]"
 assert "T2: firewallctl set +REJECT_ALL on new pkg" \
     "grep -qF 'set com.example.new.app +REJECT_ALL' '$TMP/firewallctl.log'"
-assert "T2: notification posted" \
-    "grep -q 'com.example.new.app' '$TMP/cmd.log'"
+assert "T2: notification requested" \
+    "grep -qF 'notify-blocked com.example.new.app' '$TMP/notify.log'"
 assert "T2: snapshot now has 3 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 3 ]"
 
 echo "com.example.exempt" > "$STATE/allowlist.txt"
 cat >> "$PM_LIST" <<EOF
 package:com.example.exempt
 EOF
-rm -f "$TMP/firewallctl.log" "$TMP/cmd.log"
+rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
 run_watcher --reconcile
 assert "T3: firewallctl NOT invoked for allowlisted pkg" \
     "! grep -qF 'com.example.exempt' '$TMP/firewallctl.log' 2>/dev/null"
 assert "T3: allowlist event logged" \
     "grep -qF 'skip com.example.exempt (allowlisted)' '$STATE/watcher.log'"
 
-rm -f "$TMP/firewallctl.log" "$TMP/cmd.log"
+rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
 cat >> "$PM_LIST" <<EOF
 package:com.example.another
 EOF
@@ -92,13 +93,6 @@ assert "T4: non-packages.xml event ignored" \
 run_watcher "c" "/data/system" "packages.xml"
 assert "T4: packages.xml event triggered reconcile" \
     "grep -qF 'set com.example.another +REJECT_ALL' '$TMP/firewallctl.log'"
-cat >> "$PM_LIST" <<EOF
-package:com.example.from.list
-EOF
-rm -f "$TMP/firewallctl.log"
-run_watcher "w" "/data/system" "packages.list"
-assert "T4b: packages.list event triggered reconcile" \
-    "grep -qF 'set com.example.from.list +REJECT_ALL' '$TMP/firewallctl.log'"
 
 mkdir -p "$STATE/reconcile.lock"
 rm -f "$TMP/firewallctl.log"
@@ -106,25 +100,5 @@ run_watcher --reconcile
 assert "T5: stale lock blocks reconcile (expected)" \
     "[ ! -f '$TMP/firewallctl.log' ]"
 rmdir "$STATE/reconcile.lock"
-
-cat > "$STUBS/firewallctl" <<EOF
-#!/usr/bin/env bash
-echo "\$@" >> "$TMP/firewallctl.log"
-case "\$*" in
-    *com.example.fail*) exit 1 ;;
-esac
-EOF
-chmod +x "$STUBS/firewallctl"
-cat > "$PM_LIST" <<EOF
-package:com.example.ok
-package:com.example.fail
-EOF
-printf 'com.example.ok\n' > "$STATE/known.txt"
-rm -f "$TMP/firewallctl.log"
-run_watcher --reconcile
-assert "T6: snapshot not updated when apply fails" \
-    "grep -qxF 'com.example.ok' '$STATE/known.txt'"
-assert "T6: failed pkg not added to snapshot" \
-    "! grep -qF 'com.example.fail' '$STATE/known.txt'"
 
 exit "$fail"

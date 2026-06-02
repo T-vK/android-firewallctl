@@ -70,12 +70,21 @@ wait_for_package() {
 
 notify_user() {
     pkg="$1"
-    cmd notification post \
-        -S bigtext \
-        -t "Internet blocked for new app" \
-        "firewall_default_deny_$pkg" \
-        "$pkg has been installed and its network access was disabled by default. Open Settings > Apps > $pkg > Mobile data & Wi-Fi to allow." \
-        >/dev/null 2>&1 || true
+    if [ -n "${FIREWALL_NOTIFY_CMD:-}" ]; then
+        "$FIREWALL_NOTIFY_CMD" "$pkg" >>"$LOGFILE" 2>&1 &
+        return
+    fi
+    _notify_jar=/system/bin/firewallctl.dex.jar
+    if [ ! -f "$_notify_jar" ]; then
+        log "ERROR: cannot notify, missing $_notify_jar"
+        return
+    fi
+    _notify_pkg=$(printf '%s' "$pkg" | sed "s/'/'\''/g")
+    if [ -x /system/bin/su ]; then
+        nohup /system/bin/su 0 sh -c             "CLASSPATH=$_notify_jar app_process /system/bin --nice-name=firewallctl-notify app.firewallctl.BlockedAppNotifier '$_notify_pkg'"             >>"$LOGFILE" 2>&1 &
+    else
+        nohup env CLASSPATH="$_notify_jar"             app_process /system/bin --nice-name=firewallctl-notify             app.firewallctl.BlockedAppNotifier "$pkg" >>"$LOGFILE" 2>&1 &
+    fi
 }
 
 apply_deny() {

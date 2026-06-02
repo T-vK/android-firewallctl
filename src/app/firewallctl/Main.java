@@ -39,7 +39,7 @@ public final class Main {
         }
     }
 
-    private void run(String[] args) throws Exception {
+    public void run(String[] args) throws Exception {
         if (args.length == 0) { usage(); return; }
         connect();
         String cmd = args[0];
@@ -209,7 +209,7 @@ public final class Main {
     }
 
     /** Best-effort hidden-API exemption (no-op on Android < 9 / outside zygote). */
-    private static void relaxHiddenApi() {
+    static void relaxHiddenApi() {
         try {
             Method forName = Class.class.getDeclaredMethod("forName", String.class);
             Method getDecl = Class.class.getDeclaredMethod(
