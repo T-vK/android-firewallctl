@@ -1,0 +1,137 @@
+/*
+ * Posts actionable notifications for newly default-denied apps.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package app.firewall.notify;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+
+public final class NotifyHelper {
+
+    public static final String ACTION_SHOW_BLOCKED = "app.firewall.notify.SHOW_BLOCKED";
+    public static final String EXTRA_PACKAGE = "package";
+
+    private static final String CHANNEL_ID = "firewall_default_deny";
+    private static final String CHANNEL_NAME = "Firewall default deny";
+    private static final int NOTIFICATION_ID = 0x464444;
+    private static final int FLAG_IMMUTABLE = 0x04000000;
+
+    private NotifyHelper() {
+    }
+
+    public static void showBlocked(Context context, String pkg) {
+        if (pkg == null || pkg.isEmpty()) {
+            return;
+        }
+        NotificationManager nm =
+                (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) {
+            return;
+        }
+        ensureChannel(nm);
+
+        String label = resolveAppLabel(context, pkg);
+        String title = "Internet blocked for new app";
+        String text = label + " — network access was disabled by default.";
+        String tag = notificationTag(pkg);
+
+        int iconId = context.getResources().getIdentifier(
+                "stat_sys_warning", "drawable", "android");
+        if (iconId == 0) {
+            iconId = context.getResources().getIdentifier(
+                    "ic_dialog_alert", "drawable", "android");
+        }
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
+        PendingIntent settingsPi = PendingIntent.getActivity(
+                context, pkg.hashCode() + 1, openNetworkIntent(context, pkg), flags);
+        PendingIntent allowPi = PendingIntent.getActivity(
+                context, pkg.hashCode() + 2, allowIntent(context, pkg), flags);
+
+        Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID)
+                .setSmallIcon(iconId)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(
+                        text + "\n\nPackage: " + pkg))
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(false)
+                .setContentIntent(settingsPi)
+                .addAction(new Notification.Action.Builder(0, "Allow network", allowPi).build())
+                .addAction(new Notification.Action.Builder(0, "Network settings", settingsPi)
+                        .build());
+
+        nm.notify(tag, NOTIFICATION_ID, builder.build());
+    }
+
+    public static void cancel(Context context, String pkg) {
+        NotificationManager nm =
+                (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null && pkg != null && !pkg.isEmpty()) {
+            nm.cancel(notificationTag(pkg), NOTIFICATION_ID);
+        }
+    }
+
+    public static String notificationTag(String pkg) {
+        return "firewall_default_deny_" + pkg;
+    }
+
+    private static void ensureChannel(NotificationManager nm) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT);
+        nm.createNotificationChannel(channel);
+    }
+
+    static Intent allowIntent(Context context, String pkg) {
+        Intent intent = new Intent(context, AllowActivity.class);
+        intent.putExtra(EXTRA_PACKAGE, pkg);
+        return intent;
+    }
+
+    static Intent openNetworkIntent(Context context, String pkg) {
+        Intent intent = new Intent(context, OpenNetworkActivity.class);
+        intent.putExtra(EXTRA_PACKAGE, pkg);
+        return intent;
+    }
+
+    static Intent buildDataSettingsIntent(Context context, String pkg) {
+        Intent[] candidates = new Intent[] {
+                new Intent("android.settings.APP_DATA_USAGE")
+                        .putExtra("android.intent.extra.PACKAGE_NAME", pkg),
+                new Intent("android.intent.action.MANAGE_NETWORK_USAGE")
+                        .setData(Uri.parse("package:" + pkg)),
+                new Intent("android.settings.APPLICATION_DETAILS_SETTINGS")
+                        .setData(Uri.parse("package:" + pkg)),
+        };
+        PackageManager pm = context.getPackageManager();
+        for (Intent intent : candidates) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (intent.resolveActivity(pm) != null) {
+                return intent;
+            }
+        }
+        return candidates[candidates.length - 1];
+    }
+
+    private static String resolveAppLabel(Context context, String pkg) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            ApplicationInfo info = pm.getApplicationInfo(pkg, 0);
+            return String.valueOf(info.loadLabel(pm));
+        } catch (Throwable ignored) {
+            return pkg;
+        }
+    }
+}

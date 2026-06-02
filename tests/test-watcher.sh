@@ -24,16 +24,25 @@ if [ "\$1" = "list" ] && [ "\$2" = "packages" ]; then
         cat "$PM_LIST" 2>/dev/null || true
     fi
 fi
+if [ "\$1" = "path" ]; then
+    case "\$2" in
+        app.firewall.notify) echo "package:/system/app/FirewallNotify/FirewallNotify.apk" ;;
+    esac
+fi
 EOF
 cat > "$STUBS/firewallctl" <<EOF
 #!/usr/bin/env bash
 echo "\$@" >> "$TMP/firewallctl.log"
 EOF
+cat > "$STUBS/am" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$TMP/am.log"
+EOF
 cat > "$STUBS/firewall-notify" <<EOF
 #!/usr/bin/env bash
 echo "notify-blocked \$@" >> "$TMP/notify.log"
 EOF
-chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/firewall-notify
+chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/am "$STUBS"/firewall-notify
 
 export FIREWALL_STATE_DIR="$STATE"
 export FIREWALLCTL="$STUBS/firewallctl"
@@ -53,7 +62,7 @@ cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
 package:com.example.existing.b
 EOF
-rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/notify.log"
+rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/notify.log" "$TMP/am.log"
 run_watcher --reconcile
 assert "T1: snapshot created" "[ -f '$STATE/known.txt' ]"
 assert "T1: snapshot has 2 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 2 ]"
@@ -100,5 +109,17 @@ run_watcher --reconcile
 assert "T5: stale lock blocks reconcile (expected)" \
     "[ ! -f '$TMP/firewallctl.log' ]"
 rmdir "$STATE/reconcile.lock"
+
+# T6: default notify path uses am broadcast when FIREWALL_NOTIFY_CMD unset
+unset FIREWALL_NOTIFY_CMD
+rm -f "$TMP/notify.log" "$TMP/am.log" "$TMP/firewallctl.log"
+cat > "$PM_LIST" <<EOF
+package:com.example.existing.a
+package:com.example.broadcast.test
+EOF
+printf 'com.example.existing.a\n' > "$STATE/known.txt"
+run_watcher --reconcile
+assert "T6: broadcast sent for new package" \
+    "grep -qF 'app.firewall.notify.SHOW_BLOCKED' '$TMP/am.log' && grep -qF 'com.example.broadcast.test' '$TMP/am.log'"
 
 exit "$fail"

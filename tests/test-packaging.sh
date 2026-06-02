@@ -58,7 +58,8 @@ if [ -n "$ZIP" ] && [ -f "$ZIP" ]; then
     for required in \
         module.prop customize.sh service.sh uninstall.sh \
         system/bin/firewallctl system/bin/firewallctl.dex.jar \
-        system/bin/firewall-watcher
+        system/bin/firewall-watcher system/bin/firewall-allow-app \
+        system/app/FirewallNotify/FirewallNotify.apk
     do
         assert "magisk zip contains $required" \
             "echo \"\$entries\" | grep -qFx '$required'"

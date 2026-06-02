@@ -13,11 +13,4 @@ if [ ! -f "$JAR" ]; then
     exit 1
 fi
 export CLASSPATH="$JAR"
-
-if [ "$1" = "notify-blocked" ]; then
-    shift
-    exec app_process /system/bin --nice-name=firewallctl-notify \
-        app.firewallctl.BlockedAppNotifier "$@"
-fi
-
 exec app_process /system/bin --nice-name=firewallctl app.firewallctl.Main "$@"

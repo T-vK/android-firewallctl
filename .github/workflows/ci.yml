@@ -98,9 +98,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              make dpkg-dev zip unzip curl
+              make dpkg-dev zip unzip curl openjdk-21-jdk-headless
 
-      - name: Install Android platform (compile-only)
+      - name: Install Android SDK
         run: |
           SDK_ROOT="$RUNNER_TEMP/android-sdk"
           mkdir -p "$SDK_ROOT/cmdline-tools"
@@ -109,7 +109,7 @@ jobs:
           unzip -q /tmp/cmdline-tools.zip -d "$SDK_ROOT/cmdline-tools"
           mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
           yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" \
-            "platforms;android-34"
+            "platforms;android-34" "build-tools;34.0.0"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
 
       - name: Run semantic-release

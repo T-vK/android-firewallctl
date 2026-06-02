@@ -6,6 +6,9 @@
 #              many distros as `android-tools` / `dexlib2-utils` etc.
 #              Source: https://r8.googlesource.com/r8 (Apache-2.0)
 #
+# Magisk notifications additionally need ANDROID_HOME with platforms;android-34
+# and build-tools (aapt, d8, apksigner) — see scripts/build-notify-apk.sh.
+#
 # Usage:
 #   make             # builds build/firewallctl.dex.jar
 #   make install     # adb push to /data/local/tmp/ and chmod
@@ -13,8 +16,8 @@
 #   make deb         # build a Termux-compatible .deb (requires dpkg-dev)
 #   make clean
 #
-# The output is a self-contained dex jar plus a tiny shell wrapper.
-# No APK, no signing, no install needed on the device.
+# The CLI is a self-contained dex jar plus a tiny shell wrapper.
+# The Magisk zip also ships FirewallNotify.apk as a system app.
 
 PACKAGE      := app.firewallctl
 MAIN_CLASS   := $(PACKAGE).Main
@@ -25,6 +28,7 @@ OUT_DIR      := build
 CLASSES_DIR  := $(OUT_DIR)/classes
 JAR          := $(OUT_DIR)/firewallctl-classes.jar
 DEX_JAR      := $(OUT_DIR)/firewallctl.dex.jar
+NOTIFY_APK   := $(OUT_DIR)/FirewallNotify.apk
 WRAPPER_SRC  := $(SCRIPTS_DIR)/firewallctl
 MAGISK_DIR   := magisk
 
@@ -40,17 +44,6 @@ MAGISK_ZIP   := $(OUT_DIR)/firewall_default_deny_v$(VERSION).zip
 DIST_DEX_JAR := $(OUT_DIR)/firewallctl-$(VERSION).dex.jar
 
 CORE_SRCS    := $(SRC_DIR)/app/firewallctl/Main.java
-ANDROID_SRCS := $(SRC_DIR)/app/firewallctl/BlockedAppNotifier.java \
-                $(SRC_DIR)/app/firewallctl/NotifyReceiver.java
-SOURCES      := $(CORE_SRCS) $(ANDROID_SRCS)
-
-ANDROID_JAR  ?= $(firstword \
-                  $(wildcard $(ANDROID_HOME)/platforms/android-35/android.jar) \
-                  $(wildcard $(ANDROID_HOME)/platforms/android-34/android.jar) \
-                  $(wildcard $(ANDROID_HOME)/platforms/android-33/android.jar) \
-                  $(wildcard $(ANDROID_SDK_ROOT)/platforms/android-34/android.jar) \
-                  $(wildcard /opt/android-sdk/platforms/android-34/android.jar))
-
 
 # Tool discovery: prefer PATH, then $ANDROID_HOME / $ANDROID_SDK_ROOT.
 # If neither d8 nor dx is found, the build will fetch R8 from Maven Central.
@@ -67,18 +60,23 @@ R8_JAR     := $(OUT_DIR)/r8-$(R8_VERSION).jar
 # Official Google-hosted R8 binary release (Apache-2.0; source: r8.googlesource.com/r8).
 R8_URL     := https://storage.googleapis.com/r8-releases/raw/$(R8_VERSION)/r8.jar
 # R8 8.x requires Java 11+ to run. Source compilation still targets 1.8 bytecode.
-JAVA_R8    ?= $(shell command -v java >/dev/null 2>&1 && \
-                java -version 2>&1 | head -1 | grep -qE 'version "(1[1-9]|[2-9][0-9])' && echo java; \
-                for d in /usr/lib/jvm/java-21-openjdk* /usr/lib/jvm/java-17-openjdk* \
-                         /usr/lib/jvm/java-11-openjdk* /usr/lib/jvm/default-java; do \
-                  [ -x $$d/bin/java ] && echo $$d/bin/java && break; \
-                done | head -1)
+JAVA_R8    ?= $(firstword $(shell \
+                for j in /usr/lib/jvm/java-21-openjdk-amd64/bin/java \
+                         /usr/lib/jvm/java-17-openjdk-amd64/bin/java \
+                         /usr/lib/jvm/java-11-openjdk-amd64/bin/java \
+                         /usr/lib/jvm/default-java/bin/java; do \
+                  if [ -x "$$j" ] && "$$j" -version 2>&1 | head -1 | \
+                     grep -qE 'version "(1[1-9]|[2-9][0-9])'; then \
+                    echo "$$j"; exit 0; \
+                  fi; \
+                done; \
+                command -v java 2>/dev/null))
 
 # Device install location.
 DEVICE_DIR   ?= /data/local/tmp
 ADB          ?= adb
 
-.PHONY: all clean install uninstall run deb magisk dist test check-tools
+.PHONY: all clean install uninstall run deb magisk dist test check-tools notify-apk
 
 all: $(DEX_JAR)
 
@@ -90,17 +88,9 @@ $(R8_JAR):
 	@echo "  FETCH    $(R8_URL)"
 	@curl -fsSL -o $@ $(R8_URL) || wget -qO $@ $(R8_URL)
 
-$(CLASSES_DIR)/.stamp: $(SOURCES)
+$(CLASSES_DIR)/.stamp: $(CORE_SRCS)
 	@mkdir -p $(CLASSES_DIR)
 	$(JAVAC) -source 1.8 -target 1.8 -Xlint:-options -d $(CLASSES_DIR) $(CORE_SRCS)
-	@if [ -n "$(ANDROID_JAR)" ] && [ -f "$(ANDROID_JAR)" ]; then \
-	    echo "  JAVAC    notification helpers (android.jar)"; \
-	    $(JAVAC) -source 1.8 -target 1.8 -Xlint:-options \
-	        -classpath "$(ANDROID_JAR):$(CLASSES_DIR)" \
-	        -d $(CLASSES_DIR) $(ANDROID_SRCS); \
-	else \
-	    echo "warning: ANDROID_JAR not found; notifications disabled in build"; \
-	fi
 	@touch $@
 
 $(JAR): $(CLASSES_DIR)/.stamp
@@ -126,6 +116,12 @@ $(DEX_JAR): $(JAR) check-tools
 	@(cd $(OUT_DIR) && $(JAR_TOOL) cf $(notdir $(DEX_JAR)) classes.dex && rm -f classes.dex)
 	@echo "Built: $(DEX_JAR)"
 
+notify-apk:
+	@$(SCRIPTS_DIR)/build-notify-apk.sh $(OUT_DIR)
+
+$(NOTIFY_APK): $(wildcard src/notify/app/firewall/notify/*.java) src/notify/AndroidManifest.xml scripts/build-notify-apk.sh
+	@$(MAKE) --no-print-directory notify-apk
+
 install: $(DEX_JAR) $(WRAPPER_SRC)
 	$(ADB) push $(DEX_JAR)    $(DEVICE_DIR)/firewallctl.dex.jar
 	$(ADB) push $(WRAPPER_SRC) $(DEVICE_DIR)/firewallctl
@@ -143,12 +139,12 @@ run: install
 deb: $(DEX_JAR)
 	$(SCRIPTS_DIR)/make-deb.sh $(VERSION)
 
-# Magisk module: overlays /system/bin/{firewallctl,firewallctl.dex.jar,firewall-watcher}
-# and ships service.sh / customize.sh / uninstall.sh at the module root.
-magisk: $(DEX_JAR) $(WRAPPER_SRC) $(MAGISK_DIR)/module.prop
+# Magisk module: CLI, watcher, notify APK, allow helper script.
+magisk: $(DEX_JAR) $(NOTIFY_APK) $(WRAPPER_SRC) $(MAGISK_DIR)/module.prop
 	@command -v zip >/dev/null 2>&1 || { echo "error: zip not found (install zip)"; exit 1; }
 	@rm -rf $(OUT_DIR)/magisk-staging
-	@mkdir -p $(OUT_DIR)/magisk-staging/system/bin
+	@mkdir -p $(OUT_DIR)/magisk-staging/system/bin \
+	          $(OUT_DIR)/magisk-staging/system/app/FirewallNotify
 	@sed -e 's/^version=.*/version=v$(VERSION)/' \
 	     -e 's/^versionCode=.*/versionCode=$(VERSION_CODE)/' \
 	     $(MAGISK_DIR)/module.prop > $(OUT_DIR)/magisk-staging/module.prop
@@ -157,12 +153,17 @@ magisk: $(DEX_JAR) $(WRAPPER_SRC) $(MAGISK_DIR)/module.prop
 	@cp $(MAGISK_DIR)/uninstall.sh     $(OUT_DIR)/magisk-staging/uninstall.sh
 	@cp $(WRAPPER_SRC)                 $(OUT_DIR)/magisk-staging/system/bin/firewallctl
 	@cp $(DEX_JAR)                     $(OUT_DIR)/magisk-staging/system/bin/firewallctl.dex.jar
-	@cp $(MAGISK_DIR)/system/bin/firewall-watcher $(OUT_DIR)/magisk-staging/system/bin/firewall-watcher
+	@cp $(MAGISK_DIR)/system/bin/firewall-watcher \
+	     $(OUT_DIR)/magisk-staging/system/bin/firewall-watcher
+	@cp $(MAGISK_DIR)/system/bin/firewall-allow-app \
+	     $(OUT_DIR)/magisk-staging/system/bin/firewall-allow-app
+	@cp $(NOTIFY_APK)                  $(OUT_DIR)/magisk-staging/system/app/FirewallNotify/FirewallNotify.apk
 	@chmod 0755 $(OUT_DIR)/magisk-staging/service.sh \
 	            $(OUT_DIR)/magisk-staging/customize.sh \
 	            $(OUT_DIR)/magisk-staging/uninstall.sh \
 	            $(OUT_DIR)/magisk-staging/system/bin/firewallctl \
-	            $(OUT_DIR)/magisk-staging/system/bin/firewall-watcher
+	            $(OUT_DIR)/magisk-staging/system/bin/firewall-watcher \
+	            $(OUT_DIR)/magisk-staging/system/bin/firewall-allow-app
 	@rm -f $(MAGISK_ZIP)
 	@(cd $(OUT_DIR)/magisk-staging && zip -qr ../$(notdir $(MAGISK_ZIP)) .)
 	@echo "Built: $(MAGISK_ZIP)"

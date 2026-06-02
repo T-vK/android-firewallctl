@@ -1,0 +1,33 @@
+#!/system/bin/sh
+# Allow network for a package: add to allowlist and clear REJECT_ALL policy.
+# Invoked from FirewallNotify (su 0) or manually as root.
+pkg="$1"
+if [ -z "$pkg" ]; then
+    echo "usage: firewall-allow-app <package>" >&2
+    exit 2
+fi
+
+STATE_DIR="${FIREWALL_STATE_DIR:-/data/adb/firewall_default_deny}"
+ALLOWLIST="$STATE_DIR/allowlist.txt"
+FIREWALLCTL="${FIREWALLCTL:-/system/bin/firewallctl}"
+
+mkdir -p "$STATE_DIR"
+touch "$ALLOWLIST"
+
+if ! grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$pkg"; then
+    printf '%s\n' "$pkg" >> "$ALLOWLIST"
+fi
+
+run_firewallctl() {
+    if [ ! -x "$FIREWALLCTL" ]; then
+        echo "firewall-allow-app: missing $FIREWALLCTL" >&2
+        return 127
+    fi
+    if [ -x /system/bin/su ]; then
+        /system/bin/su 0 "$FIREWALLCTL" "$@"
+    else
+        "$FIREWALLCTL" "$@"
+    fi
+}
+
+run_firewallctl clear "$pkg" && run_firewallctl set "$pkg" -REJECT_ALL

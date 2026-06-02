@@ -65,7 +65,9 @@ After reboot, a watcher daemon runs as root. It:
 2. For each new third-party package not on the allowlist, it invokes
    `firewallctl set <pkg> +REJECT_ALL`. The change is **immediately
    reflected in the system Settings UI**.
-3. Posts a shell-level notification via `cmd notification`.
+3. Shows an actionable notification (Allow network / Network settings) via
+   the bundled `FirewallNotify` system app (`app.firewall.notify`), with a
+   `su 2000 cmd notification` fallback if the APK is unavailable.
 4. End-to-end latency from `close_write` on `packages.xml` to policy
    applied is typically 150–400 ms — fast enough to win the race against
    most "Open" taps post-install.
@@ -132,9 +134,7 @@ inline comments in `magisk/system/bin/firewall-watcher`.
 
 Requirements: `make`, `javac` (OpenJDK 8+), `zip`, `unzip`, `dpkg-dev`,
 and either `d8`/`dx` from the Android SDK build-tools **or** an internet
-connection (the Makefile fetches R8 on demand; R8 needs Java 11+). Actionable
-install notifications need a compile-only `android.jar` (API 34) via
-`ANDROID_HOME` (`sdkmanager "platforms;android-34"`).
+connection (the Makefile fetches R8 on demand; R8 needs Java 11+).
 
 ```bash
 make           # build/firewallctl.dex.jar
