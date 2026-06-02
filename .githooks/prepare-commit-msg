@@ -1,0 +1,11 @@
+#!/bin/sh
+# Drop Cursor co-author trailers so GitHub does not attribute commits to cursoragent.
+msg_file="$1"
+case "$2" in
+    merge|squash) exit 0 ;;
+esac
+if [ -f "$msg_file" ]; then
+    sed -i '/^[Cc]o-[Aa]uthored-by:.*[Cc]ursor/d' "$msg_file" 2>/dev/null \
+        || sed -i '' '/^[Cc]o-[Aa]uthored-by:.*[Cc]ursor/d' "$msg_file" 2>/dev/null \
+        || true
+fi

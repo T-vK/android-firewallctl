@@ -185,6 +185,21 @@ If no commits since the last release warrant a version bump, no release
 is produced. Commit messages therefore drive the entire release: use
 `feat:`, `fix:`, `perf:`, `docs:`, `chore:`, etc.
 
+### Git authorship
+
+Commits on `main` should be authored by **T-vK** only. After cloning, run
+`scripts/setup-git.sh` so local `user.name` / `user.email` and
+`.githooks/prepare-commit-msg` are set (the hook strips accidental
+`Co-authored-by: Cursor` trailers).
+
+If **cursoragent** still appears on the repository page, it is almost
+certainly from a closed Cloud Agent pull request (e.g. PR #1) whose
+head commit was authored as `Cursor Agent`. Delete that pull request
+from the GitHub UI (**… → Delete pull request** on the PR page, or ask
+[GitHub Support](https://support.github.com/contact) to remove it); that
+commit is not on `main`.
+
+
 ---
 
 ## License
