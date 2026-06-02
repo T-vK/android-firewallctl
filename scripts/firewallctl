@@ -1,9 +1,16 @@
 #!/system/bin/sh
 # On-device wrapper for firewallctl.
-# Install: push to /data/local/tmp/ together with firewallctl.dex.jar.
-# Run as root, e.g.:  su -c '/data/local/tmp/firewallctl get com.android.chrome'
-DIR="$(cd "$(dirname "$0")" && pwd)"
-JAR="$DIR/firewallctl.dex.jar"
+# Install: push to /data/local/tmp/ together with firewallctl.dex.jar,
+# or via the Magisk module overlay at /system/bin/.
+#
+# When invoked as bare "firewallctl" on PATH, dirname "$0" is "." and the
+# dex jar is not found unless we prefer the Magisk overlay path.
+if [ -f /system/bin/firewallctl.dex.jar ]; then
+    JAR=/system/bin/firewallctl.dex.jar
+else
+    DIR="$(cd "$(dirname "$0")" && pwd)"
+    JAR="$DIR/firewallctl.dex.jar"
+fi
 if [ ! -f "$JAR" ]; then
     echo "firewallctl: cannot find $JAR" >&2
     exit 1

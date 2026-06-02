@@ -1,16 +1,15 @@
 #!/system/bin/sh
 # firewall-watcher: applies POLICY_REJECT_ALL to newly installed user apps.
 #
-# Event-driven via inotifyd on /data/system/. When packages.xml is written
-# (AtomicFile rename + create + close_write), we reconcile pm list packages
-# against a snapshot and apply +REJECT_ALL to anything new (minus the
-# allowlist). A slow safety-net poll covers the case where inotifyd is
-# unavailable or wedged.
+# Event-driven via inotifyd on /data/system/. When packages.xml or
+# packages.list changes, reconcile pm list packages -3 against a snapshot
+# and apply +REJECT_ALL to anything new (minus the allowlist). A safety-net
+# poll covers wedged/missing inotifyd.
 #
 # Modes:
 #   firewall-watcher              daemon (started by service.sh)
 #   firewall-watcher --reconcile  single reconcile pass (manual / safety poll)
-#   firewall-watcher EVT [DIR] FN inotifyd callback (invoked by inotifyd)
+#   firewall-watcher EVT DIR FILE   inotifyd callback (toybox/busybox)
 
 STATE_DIR="${FIREWALL_STATE_DIR:-/data/adb/firewall_default_deny}"
 SNAPSHOT="$STATE_DIR/known.txt"
@@ -18,7 +17,9 @@ ALLOWLIST="$STATE_DIR/allowlist.txt"
 LOGFILE="$STATE_DIR/watcher.log"
 LOCK="$STATE_DIR/reconcile.lock"
 WATCH_DIR="${FIREWALL_WATCH_DIR:-/data/system}"
-SAFETY_INTERVAL="${FIREWALL_WATCHER_SAFETY_INTERVAL:-300}"
+SAFETY_INTERVAL="${FIREWALL_WATCHER_SAFETY_INTERVAL:-60}"
+FIREWALLCTL="${FIREWALLCTL:-/system/bin/firewallctl}"
+INSTALL_SETTLE_SEC="${FIREWALL_INSTALL_SETTLE_SEC:-15}"
 
 mkdir -p "$STATE_DIR"
 touch "$ALLOWLIST"
@@ -35,6 +36,38 @@ current_packages() {
     pm list packages -3 2>/dev/null | sed 's/^package://' | sort -u
 }
 
+run_firewallctl() {
+    if [ ! -x "$FIREWALLCTL" ]; then
+        log "ERROR: missing $FIREWALLCTL (is the module enabled?)"
+        return 127
+    fi
+    if [ -x /system/bin/su ]; then
+        /system/bin/su 0 "$FIREWALLCTL" "$@"
+    else
+        "$FIREWALLCTL" "$@"
+    fi
+}
+
+package_visible() {
+    pm list packages "$1" 2>/dev/null | grep -qxF "package:$1"
+}
+
+wait_for_package() {
+    pkg="$1"
+    waited=0
+    while :; do
+        if package_visible "$pkg"; then
+            return 0
+        fi
+        if [ "$waited" -ge "$INSTALL_SETTLE_SEC" ]; then
+            log "ERROR: $pkg not visible to pm after ${INSTALL_SETTLE_SEC}s"
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
 notify_user() {
     pkg="$1"
     cmd notification post \
@@ -49,18 +82,21 @@ apply_deny() {
     pkg="$1"
     if is_allowlisted "$pkg"; then
         log "skip $pkg (allowlisted)"
-        return
+        return 0
     fi
-    if firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
+    if ! wait_for_package "$pkg"; then
+        return 1
+    fi
+    if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
         notify_user "$pkg"
-    else
-        log "ERROR: failed to apply policy for $pkg"
+        return 0
     fi
+    log "ERROR: firewallctl set +REJECT_ALL failed for $pkg"
+    run_firewallctl list-policies >> "$LOGFILE" 2>&1 || true
+    return 1
 }
 
-# Single reconcile pass. Lock collapses concurrent invocations (inotifyd
-# fires multiple events per packages.xml write) into one effective run.
 reconcile() {
     if ! mkdir "$LOCK" 2>/dev/null; then
         return 0
@@ -74,46 +110,59 @@ reconcile() {
     if current=$(current_packages); then
         new=$(printf '%s\n' "$current" | comm -23 - "$SNAPSHOT" 2>/dev/null)
         if [ -n "$new" ]; then
+            failfile="$STATE_DIR/.reconcile_failed"
+            : > "$failfile"
             printf '%s\n' "$new" | while IFS= read -r pkg; do
-                [ -n "$pkg" ] && apply_deny "$pkg"
+                [ -n "$pkg" ] || continue
+                if ! apply_deny "$pkg"; then
+                    echo "$pkg" >> "$failfile"
+                fi
             done
-            printf '%s\n' "$current" > "$SNAPSHOT"
+            if [ ! -s "$failfile" ]; then
+                printf '%s\n' "$current" > "$SNAPSHOT"
+            else
+                log "reconcile: snapshot unchanged; failed: $(tr '\n' ' ' < "$failfile")"
+            fi
+            rm -f "$failfile"
         fi
     fi
     rmdir "$LOCK" 2>/dev/null
 }
 
-# Dispatch on invocation style.
+is_package_db_event() {
+    for arg in "$@"; do
+        case "$arg" in
+            packages.xml|packages.list|*/packages.xml|*/packages.list)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 case "$1" in
     --reconcile)
         reconcile
         exit 0
         ;;
     "")
-        : # daemon mode, falls through below
         ;;
     *)
-        # inotifyd callback. Toybox passes "EVENTS [WATCHED_PATH] FILENAME".
-        # We only care if the changed file is packages.xml; everything else
-        # in /data/system/ is noise.
-        for arg in "$@"; do
-            if [ "$arg" = "packages.xml" ]; then
-                reconcile
-                exit 0
-            fi
-        done
+        if is_package_db_event "$@"; then
+            reconcile
+        fi
         exit 0
         ;;
 esac
 
-# === daemon mode ===
+if [ ! -x "$FIREWALLCTL" ]; then
+    log "ERROR: $FIREWALLCTL missing; module overlay not mounted?"
+fi
 
-# Trim log on each daemon start.
 if [ -f "$LOGFILE" ] && [ "$(wc -l < "$LOGFILE")" -gt 500 ]; then
     tail -n 500 "$LOGFILE" > "$LOGFILE.tmp" && mv "$LOGFILE.tmp" "$LOGFILE"
 fi
 
-# Clear stale lock from a previous crashed run.
 rmdir "$LOCK" 2>/dev/null
 
 cleanup() {
@@ -130,14 +179,12 @@ else
     log "watcher starting (inotifyd MISSING, safety poll ${SAFETY_INTERVAL}s only)"
 fi
 
-# Ensure snapshot exists before we arm the watch.
 reconcile
 
-# Supervise inotifyd: respawn if it exits.
 (
     while true; do
         if command -v inotifyd >/dev/null 2>&1; then
-            inotifyd "$0" "$WATCH_DIR" 2>>"$LOGFILE"
+            inotifyd "$0" "${WATCH_DIR}:wcmynd" 2>>"$LOGFILE"
             log "inotifyd exited rc=$?, restarting in 5s"
             sleep 5
         else
@@ -147,7 +194,6 @@ reconcile
 ) &
 INOTIFY_SUP_PID=$!
 
-# Safety-net poll in foreground.
 while true; do
     sleep "$SAFETY_INTERVAL"
     reconcile

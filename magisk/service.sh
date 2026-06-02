@@ -16,5 +16,6 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     exit 0
 fi
 
-nohup /system/bin/firewall-watcher >/dev/null 2>&1 &
+BOOTLOG=/data/adb/firewall_default_deny/service-boot.log
+nohup /system/bin/firewall-watcher >>"$BOOTLOG" 2>&1 &
 echo $! > "$PIDFILE"
