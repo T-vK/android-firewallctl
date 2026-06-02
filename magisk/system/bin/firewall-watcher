@@ -68,17 +68,24 @@ wait_for_package() {
     done
 }
 
+NOTIFY_APK_COMPONENT="app.firewall.notify"
+
 notify_user_fallback() {
     pkg="$1"
     _intent="intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${pkg};end"
     _text="${pkg} was installed and network access was disabled by default."
     if [ -x /system/bin/su ]; then
-        su 2000 -c "cmd notification post -t 'Internet blocked for new app' -c '${_intent}' 'firewall_default_deny_${pkg}' '${_text}'" \
-            >>"$LOGFILE" 2>&1 || true
+        su 2000 -c "cmd notification post -t 'Internet blocked for new app' -c '${_intent}' 'firewall_default_deny_${pkg}' '${_text}'"             >>"$LOGFILE" 2>&1 || true
     else
-        cmd notification post -t "Internet blocked for new app" -c "$_intent" \
-            "firewall_default_deny_${pkg}" "$_text" >>"$LOGFILE" 2>&1 || true
+        cmd notification post -t "Internet blocked for new app" -c "$_intent"             "firewall_default_deny_${pkg}" "$_text" >>"$LOGFILE" 2>&1 || true
     fi
+}
+
+notify_via_apk() {
+    pkg="$1"
+    am start --user 0         -n "${NOTIFY_APK_COMPONENT}/.PostNotificationActivity"         --es package "$pkg" >>"$LOGFILE" 2>&1 && return 0
+    am broadcast --user 0         -a app.firewall.notify.SHOW_BLOCKED         -n "${NOTIFY_APK_COMPONENT}/.NotifyReceiver"         --es package "$pkg"         --receiver-include-background >>"$LOGFILE" 2>&1 && return 0
+    return 1
 }
 
 notify_user() {
@@ -87,17 +94,17 @@ notify_user() {
         "$FIREWALL_NOTIFY_CMD" "$pkg" >>"$LOGFILE" 2>&1 &
         return
     fi
-    if pm path app.firewall.notify >/dev/null 2>&1; then
-        if am broadcast -a app.firewall.notify.SHOW_BLOCKED \
-            -n app.firewall.notify/.NotifyReceiver \
-            --es package "$pkg" --user 0 >>"$LOGFILE" 2>&1; then
-            return
+    (
+        if pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
+            if notify_via_apk "$pkg"; then
+                exit 0
+            fi
+            log "WARN: FirewallNotify delivery failed for $pkg; using shell fallback"
+        else
+            log "WARN: FirewallNotify APK missing; using shell fallback for $pkg"
         fi
-        log "WARN: notify broadcast failed for $pkg; using shell fallback"
-    else
-        log "WARN: FirewallNotify APK missing; using shell fallback for $pkg"
-    fi
-    notify_user_fallback "$pkg"
+        notify_user_fallback "$pkg"
+    ) >>"$LOGFILE" 2>&1 &
 }
 
 apply_deny() {
@@ -194,6 +201,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
+
+log "firewall-watcher build=notify-apk-v2"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"

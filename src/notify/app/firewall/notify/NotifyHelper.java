@@ -44,11 +44,9 @@ public final class NotifyHelper {
         String text = label + " — network access was disabled by default.";
         String tag = notificationTag(pkg);
 
-        int iconId = context.getResources().getIdentifier(
-                "stat_sys_warning", "drawable", "android");
+        int iconId = android.R.drawable.stat_sys_warning;
         if (iconId == 0) {
-            iconId = context.getResources().getIdentifier(
-                    "ic_dialog_alert", "drawable", "android");
+            iconId = android.R.drawable.ic_dialog_alert;
         }
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
@@ -70,7 +68,11 @@ public final class NotifyHelper {
                 .addAction(new Notification.Action.Builder(0, "Network settings", settingsPi)
                         .build());
 
-        nm.notify(tag, NOTIFICATION_ID, builder.build());
+        try {
+            nm.notify(tag, NOTIFICATION_ID, builder.build());
+        } catch (SecurityException e) {
+            System.err.println("FirewallNotify: POST_NOTIFICATIONS denied: " + e.getMessage());
+        }
     }
 
     public static void cancel(Context context, String pkg) {
@@ -90,7 +92,8 @@ public final class NotifyHelper {
             return;
         }
         NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT);
+                CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH);
+        channel.setDescription("Alerts when a newly installed app is blocked by default");
         nm.createNotificationChannel(channel);
     }
 

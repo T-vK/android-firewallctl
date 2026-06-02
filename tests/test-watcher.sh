@@ -110,7 +110,7 @@ assert "T5: stale lock blocks reconcile (expected)" \
     "[ ! -f '$TMP/firewallctl.log' ]"
 rmdir "$STATE/reconcile.lock"
 
-# T6: default notify path uses am broadcast when FIREWALL_NOTIFY_CMD unset
+# T6: default notify path uses am start/broadcast when FIREWALL_NOTIFY_CMD unset
 unset FIREWALL_NOTIFY_CMD
 rm -f "$TMP/notify.log" "$TMP/am.log" "$TMP/firewallctl.log"
 cat > "$PM_LIST" <<EOF
@@ -119,7 +119,8 @@ package:com.example.broadcast.test
 EOF
 printf 'com.example.existing.a\n' > "$STATE/known.txt"
 run_watcher --reconcile
-assert "T6: broadcast sent for new package" \
-    "grep -qF 'app.firewall.notify.SHOW_BLOCKED' '$TMP/am.log' && grep -qF 'com.example.broadcast.test' '$TMP/am.log'"
+sleep 1
+assert "T6: notify activity or broadcast sent" \
+    "[ -f '$TMP/am.log' ] && grep -qF 'com.example.broadcast.test' '$TMP/am.log' && (grep -qF 'PostNotificationActivity' '$TMP/am.log' || grep -qF 'SHOW_BLOCKED' '$TMP/am.log')"
 
 exit "$fail"
