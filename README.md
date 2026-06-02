@@ -66,8 +66,8 @@ After reboot, a watcher daemon runs as root. It:
    `firewallctl set <pkg> +REJECT_ALL`. The change is **immediately
    reflected in the system Settings UI**.
 3. Shows an actionable notification (Allow network / Network settings) via
-   the bundled `FirewallNotify` system app (`app.firewall.notify`), with a
-   `su 2000 cmd notification` fallback if the APK is unavailable.
+   the bundled `FirewallNotify` system app (`app.firewall.notify`), with
+   `su 2000 cmd notification` and `am start` fallbacks if the APK is missing.
 4. End-to-end latency from `close_write` on `packages.xml` to policy
    applied is typically 150–400 ms — fast enough to win the race against
    most "Open" taps post-install.
@@ -184,21 +184,6 @@ last release and:
 If no commits since the last release warrant a version bump, no release
 is produced. Commit messages therefore drive the entire release: use
 `feat:`, `fix:`, `perf:`, `docs:`, `chore:`, etc.
-
-### Git authorship
-
-Commits on `main` should be authored by **T-vK** only. After cloning, run
-`scripts/setup-git.sh` so local `user.name` / `user.email` and
-`.githooks/prepare-commit-msg` are set (the hook strips accidental
-`Co-authored-by: Cursor` trailers).
-
-If **cursoragent** still appears on the repository page, it is almost
-certainly from a closed Cloud Agent pull request (e.g. PR #1) whose
-head commit was authored as `Cursor Agent`. Delete that pull request
-from the GitHub UI (**… → Delete pull request** on the PR page, or ask
-[GitHub Support](https://support.github.com/contact) to remove it); that
-commit is not on `main`.
-
 
 ---
 

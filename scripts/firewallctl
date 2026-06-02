@@ -13,4 +13,4 @@ if [ ! -f "$JAR" ]; then
     exit 1
 fi
 export CLASSPATH="$JAR"
-exec app_process /system/bin --nice-name=firewallctl app.firewallctl.Main "$@"
+exec /system/bin/app_process /system/bin --nice-name=firewallctl app.firewallctl.Main "$@"

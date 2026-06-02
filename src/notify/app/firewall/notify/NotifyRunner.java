@@ -39,7 +39,7 @@ public final class NotifyRunner {
     private static void grantNotificationPermission() {
         try {
             Process p = Runtime.getRuntime().exec(new String[]{
-                    "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS"});
+                    "/system/bin/pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS"});
             p.waitFor();
         } catch (Throwable ignored) {
             /* best-effort */

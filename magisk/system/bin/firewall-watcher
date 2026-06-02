@@ -271,7 +271,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v8"
+log "firewall-watcher build=notify-apk-v9"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"
@@ -284,7 +284,7 @@ reconcile
 (
     while true; do
         if command -v inotifyd >/dev/null 2>&1; then
-            inotifyd "$0" "${WATCH_DIR}:wcmynd" 2>>"$LOGFILE"
+            inotifyd "$0" "$WATCH_DIR" 2>>"$LOGFILE"
             log "inotifyd exited rc=$?, restarting in 5s"
             sleep 5
         else

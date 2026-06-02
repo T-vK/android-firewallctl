@@ -16,6 +16,7 @@ touch "$ALLOWLIST"
 
 if ! grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$pkg"; then
     printf '%s\n' "$pkg" >> "$ALLOWLIST"
+    echo "allowlist: added $pkg"
 fi
 
 run_firewallctl() {
@@ -30,4 +31,12 @@ run_firewallctl() {
     fi
 }
 
-run_firewallctl clear "$pkg" && run_firewallctl set "$pkg" -REJECT_ALL
+if ! run_firewallctl clear "$pkg"; then
+    echo "firewall-allow-app: clear failed for $pkg" >&2
+    exit 1
+fi
+if ! run_firewallctl set "$pkg" -REJECT_ALL; then
+    echo "firewall-allow-app: set -REJECT_ALL failed for $pkg" >&2
+    exit 1
+fi
+echo "firewall-allow-app: network allowed for $pkg (allowlisted, REJECT_ALL cleared)"

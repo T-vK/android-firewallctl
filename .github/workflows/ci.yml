@@ -26,6 +26,12 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
       - name: Install build tooling
         run: |
           sudo apt-get update
@@ -98,19 +104,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              make dpkg-dev zip unzip curl openjdk-21-jdk-headless
-
-      - name: Install Android SDK
-        run: |
-          SDK_ROOT="$RUNNER_TEMP/android-sdk"
-          mkdir -p "$SDK_ROOT/cmdline-tools"
-          curl -fsSL -o /tmp/cmdline-tools.zip \
-            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q /tmp/cmdline-tools.zip -d "$SDK_ROOT/cmdline-tools"
-          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
-          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" \
-            "platforms;android-34" "build-tools;34.0.0"
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+              make dpkg-dev zip unzip
 
       - name: Run semantic-release
         env:

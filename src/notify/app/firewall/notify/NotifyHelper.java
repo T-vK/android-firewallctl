@@ -53,7 +53,7 @@ public final class NotifyHelper {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
         PendingIntent settingsPi = PendingIntent.getActivity(
                 context, pkg.hashCode() + 1, openNetworkIntent(context, pkg), flags);
-        PendingIntent allowPi = PendingIntent.getBroadcast(
+        PendingIntent allowPi = PendingIntent.getActivity(
                 context, pkg.hashCode() + 2, allowIntent(context, pkg), flags);
 
         Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID)
@@ -101,10 +101,9 @@ public final class NotifyHelper {
     }
 
     static Intent allowIntent(Context context, String pkg) {
-        Intent intent = new Intent(AllowReceiver.ACTION_ALLOW_NETWORK);
-        intent.setClass(context, AllowReceiver.class);
+        Intent intent = new Intent(context, AllowActivity.class);
         intent.putExtra(EXTRA_PACKAGE, pkg);
-        intent.setPackage(context.getPackageName());
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return intent;
     }
 
@@ -115,7 +114,7 @@ public final class NotifyHelper {
         return intent;
     }
 
-    /** Opens per-app "Mobile data & Wi‑Fi" / data usage (not app-info parent screen). */
+    /** Opens per-app Mobile data and Wi-Fi / data usage (not app-info parent screen). */
     static Intent buildDataSettingsIntent(Context context, String pkg) {
         Uri packageUri = Uri.parse("package:" + pkg);
         ComponentName appDataUsage = new ComponentName(
