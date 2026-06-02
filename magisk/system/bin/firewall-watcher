@@ -271,7 +271,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v6"
+log "firewall-watcher build=notify-apk-v7"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"

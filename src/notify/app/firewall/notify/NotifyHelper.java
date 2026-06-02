@@ -70,8 +70,10 @@ public final class NotifyHelper {
 
         try {
             nm.notify(tag, NOTIFICATION_ID, builder.build());
-        } catch (SecurityException e) {
-            System.err.println("FirewallNotify: POST_NOTIFICATIONS denied: " + e.getMessage());
+        } catch (Throwable e) {
+            System.err.println("FirewallNotify: notify failed: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            throw new RuntimeException(e);
         }
     }
 

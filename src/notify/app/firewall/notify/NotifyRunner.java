@@ -10,6 +10,10 @@ import android.os.Looper;
 
 public final class NotifyRunner {
 
+    private static final String PACKAGE = "app.firewall.notify";
+    private static final int CONTEXT_INCLUDE_CODE = 0x00000001;
+    private static final int CONTEXT_IGNORE_SECURITY = 0x00000002;
+
     private NotifyRunner() {
     }
 
@@ -20,8 +24,10 @@ public final class NotifyRunner {
         }
         try {
             Looper.prepareMainLooper();
-            Context ctx = getSystemContext();
+            grantNotificationPermission();
+            Context ctx = getAppContext();
             NotifyHelper.showBlocked(ctx, args[0]);
+            System.out.println("NotifyRunner: posted for " + args[0]);
             System.exit(0);
         } catch (Throwable t) {
             Throwable c = t.getCause() != null ? t.getCause() : t;
@@ -30,9 +36,21 @@ public final class NotifyRunner {
         }
     }
 
-    private static Context getSystemContext() throws Exception {
+    private static void grantNotificationPermission() {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{
+                    "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS"});
+            p.waitFor();
+        } catch (Throwable ignored) {
+            /* best-effort */
+        }
+    }
+
+    private static Context getAppContext() throws Exception {
         Class<?> at = Class.forName("android.app.ActivityThread");
         Object thread = at.getMethod("systemMain").invoke(null);
-        return (Context) at.getMethod("getSystemContext").invoke(thread);
+        Context system = (Context) at.getMethod("getSystemContext").invoke(thread);
+        int flags = CONTEXT_INCLUDE_CODE | CONTEXT_IGNORE_SECURITY;
+        return system.createPackageContext(PACKAGE, flags);
     }
 }
