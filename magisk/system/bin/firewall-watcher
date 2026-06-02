@@ -79,12 +79,12 @@ else
     CMD=cmd
 fi
 
-# Run as shell (uid 2000). Root "am start" often returns 0 but BAL blocks the
-# activity when invoked from the background watcher; shell UID matches manual tests.
-run_as_shell() {
+# Watcher runs as root. Use root for am/cmd (matches "sudo am start" manual tests).
+# su 2000 + am broadcast fails on some ROMs (Binder transaction 2147483646).
+run_as_root() {
     _cmd="$1"
     if [ -x /system/bin/su ]; then
-        /system/bin/su 2000 sh -c "$_cmd"
+        /system/bin/su 0 sh -c "$_cmd"
     else
         sh -c "$_cmd"
     fi
@@ -94,24 +94,33 @@ notify_user_fallback() {
     pkg="$1"
     _intent="intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${pkg};end"
     _text="${pkg} was installed and network access was disabled by default."
-    run_as_shell "$CMD notification post -t 'Internet blocked for new app' -c '${_intent}' 'firewall_default_deny_${pkg}' '${_text}'" \
-        >>"$LOGFILE" 2>&1 || true
+    _post="${CMD} notification post -t 'Internet blocked for new app' -c '${_intent}' 'firewall_default_deny_${pkg}' '${_text}'"
+    if run_as_root "$_post" >>"$LOGFILE" 2>&1; then
+        log "notify: shell notification posted for $pkg"
+        return 0
+    fi
+    if [ -x /system/bin/su ]; then
+        /system/bin/su 2000 sh -c "$_post" >>"$LOGFILE" 2>&1 && return 0
+    fi
+    return 1
 }
 
 notify_via_apk() {
     pkg="$1"
     _esc=$(printf '%s' "$pkg" | sed "s/'/'\\\\''/g")
-    _bc="${AM} broadcast --user 0 -a app.firewall.notify.SHOW_BLOCKED \
--n ${NOTIFY_APK_COMPONENT}/.NotifyReceiver --es package '${_esc}' \
---receiver-include-background"
-    if run_as_shell "$_bc" >>"$LOGFILE" 2>&1; then
-        log "notify: broadcast sent for $pkg"
+    _act="${AM} start --user 0 -n ${NOTIFY_APK_COMPONENT}/.PostNotificationActivity --es package '${_esc}'"
+    if run_as_root "$_act" >>"$LOGFILE" 2>&1; then
+        log "notify: activity started for $pkg"
         return 0
     fi
-    _svc="${AM} startservice --user 0 -n ${NOTIFY_APK_COMPONENT}/.NotifyService \
---es package '${_esc}'"
-    if run_as_shell "$_svc" >>"$LOGFILE" 2>&1; then
+    _svc="${AM} startservice --user 0 -n ${NOTIFY_APK_COMPONENT}/.NotifyService --es package '${_esc}'"
+    if run_as_root "$_svc" >>"$LOGFILE" 2>&1; then
         log "notify: service started for $pkg"
+        return 0
+    fi
+    _bc="${AM} broadcast --user 0 -a app.firewall.notify.SHOW_BLOCKED -n ${NOTIFY_APK_COMPONENT}/.NotifyReceiver --es package '${_esc}'"
+    if run_as_root "$_bc" >>"$LOGFILE" 2>&1; then
+        log "notify: broadcast sent for $pkg"
         return 0
     fi
     return 1
@@ -236,7 +245,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v3"
+log "firewall-watcher build=notify-apk-v4"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"

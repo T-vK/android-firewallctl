@@ -120,7 +120,7 @@ EOF
 printf 'com.example.existing.a\n' > "$STATE/known.txt"
 run_watcher --reconcile
 sleep 2
-assert "T6: notify activity or broadcast sent" \
-    "[ -f '$TMP/am.log' ] && grep -qF 'com.example.broadcast.test' '$TMP/am.log' && (grep -qF 'PostNotificationActivity' '$TMP/am.log' || grep -qF 'SHOW_BLOCKED' '$TMP/am.log')"
+assert "T6: notify activity started for new package" \
+    "[ -f '$TMP/am.log' ] && grep -qF 'PostNotificationActivity' '$TMP/am.log' && grep -qF 'com.example.broadcast.test' '$TMP/am.log'"
 
 exit "$fail"
