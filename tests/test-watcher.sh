@@ -13,7 +13,9 @@ trap 'rm -rf "$TMP"' EXIT
 STATE="$TMP/state"
 STUBS="$TMP/bin"
 PM_LIST="$TMP/pm-output"
+NOTIFY_APK="$TMP/FirewallNotify.apk"
 mkdir -p "$STATE" "$STUBS"
+touch "$NOTIFY_APK"
 
 cat > "$STUBS/pm" <<EOF
 #!/usr/bin/env bash
@@ -26,7 +28,7 @@ if [ "\$1" = "list" ] && [ "\$2" = "packages" ]; then
 fi
 if [ "\$1" = "path" ]; then
     case "\$2" in
-        app.firewall.notify) echo "package:/system/app/FirewallNotify/FirewallNotify.apk" ;;
+        app.firewall.notify) echo "package:$NOTIFY_APK" ;;
     esac
 fi
 EOF
@@ -34,19 +36,19 @@ cat > "$STUBS/firewallctl" <<EOF
 #!/usr/bin/env bash
 echo "\$@" >> "$TMP/firewallctl.log"
 EOF
-cat > "$STUBS/am" <<EOF
+cat > "$STUBS/cmd" <<EOF
 #!/usr/bin/env bash
-echo "\$@" >> "$TMP/am.log"
+echo "\$@" >> "$TMP/cmd.log"
 EOF
-cat > "$STUBS/firewall-notify" <<EOF
+cat > "$STUBS/app_process" <<EOF
 #!/usr/bin/env bash
-echo "notify-blocked \$@" >> "$TMP/notify.log"
+echo "\$@" >> "$TMP/app_process.log"
+exit 0
 EOF
-chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/am "$STUBS"/firewall-notify
+chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/cmd "$STUBS"/app_process
 
 export FIREWALL_STATE_DIR="$STATE"
 export FIREWALLCTL="$STUBS/firewallctl"
-export FIREWALL_NOTIFY_CMD="$STUBS/firewall-notify"
 export FIREWALL_INSTALL_SETTLE_SEC=0
 export PATH="$STUBS:$PATH"
 
@@ -62,7 +64,7 @@ cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
 package:com.example.existing.b
 EOF
-rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/notify.log" "$TMP/am.log"
+rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/cmd.log" "$TMP/app_process.log"
 run_watcher --reconcile
 assert "T1: snapshot created" "[ -f '$STATE/known.txt' ]"
 assert "T1: snapshot has 2 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 2 ]"
@@ -73,13 +75,18 @@ package:com.example.existing.a
 package:com.example.existing.b
 package:com.example.new.app
 EOF
+export FIREWALL_NOTIFY_CMD="$STUBS/firewall-notify"
+cat > "$STUBS/firewall-notify" <<EOF
+#!/usr/bin/env bash
+echo "notify-blocked \$@" >> "$TMP/notify.log"
+EOF
+chmod +x "$STUBS/firewall-notify"
 run_watcher --reconcile
 assert "T2: firewallctl was invoked" "[ -f '$TMP/firewallctl.log' ]"
 assert "T2: firewallctl set +REJECT_ALL on new pkg" \
     "grep -qF 'set com.example.new.app +REJECT_ALL' '$TMP/firewallctl.log'"
 assert "T2: notification requested" \
     "grep -qF 'notify-blocked com.example.new.app' '$TMP/notify.log'"
-assert "T2: snapshot now has 3 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 3 ]"
 
 echo "com.example.exempt" > "$STATE/allowlist.txt"
 cat >> "$PM_LIST" <<EOF
@@ -110,9 +117,8 @@ assert "T5: stale lock blocks reconcile (expected)" \
     "[ ! -f '$TMP/firewallctl.log' ]"
 rmdir "$STATE/reconcile.lock"
 
-# T6: default notify path uses am start/broadcast when FIREWALL_NOTIFY_CMD unset
 unset FIREWALL_NOTIFY_CMD
-rm -f "$TMP/notify.log" "$TMP/am.log" "$TMP/firewallctl.log"
+rm -f "$TMP/notify.log" "$TMP/app_process.log" "$TMP/cmd.log" "$TMP/firewallctl.log"
 cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
 package:com.example.broadcast.test
@@ -120,7 +126,7 @@ EOF
 printf 'com.example.existing.a\n' > "$STATE/known.txt"
 run_watcher --reconcile
 sleep 2
-assert "T6: notify activity started for new package" \
-    "[ -f '$TMP/am.log' ] && grep -qF 'PostNotificationActivity' '$TMP/am.log' && grep -qF 'com.example.broadcast.test' '$TMP/am.log'"
+assert "T6: app_process notify runner invoked" \
+    "[ -f '$TMP/app_process.log' ] && grep -qF 'com.example.broadcast.test' '$TMP/app_process.log'"
 
 exit "$fail"

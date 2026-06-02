@@ -69,75 +69,101 @@ wait_for_package() {
 }
 
 NOTIFY_APK_COMPONENT="app.firewall.notify"
+NOTIFY_RUNNER=app.firewall.notify.NotifyRunner
+
 if [ -x /system/bin/pm ]; then
     AM=/system/bin/am
     PM=/system/bin/pm
     CMD=/system/bin/cmd
+    APP_PROCESS=/system/bin/app_process
 else
     AM=am
     PM=pm
     CMD=cmd
+    APP_PROCESS=app_process
 fi
 
-# Watcher runs as root. Use root for am/cmd (matches "sudo am start" manual tests).
-# su 2000 + am broadcast fails on some ROMs (Binder transaction 2147483646).
-run_as_root() {
-    _cmd="$1"
-    if [ -x /system/bin/su ]; then
-        /system/bin/su 0 sh -c "$_cmd"
-    else
-        sh -c "$_cmd"
+# Resolve app_process: "test -x app_process" does not search PATH.
+if [ ! -x "$APP_PROCESS" ] 2>/dev/null; then
+    _ap=$(command -v app_process 2>/dev/null) || true
+    if [ -n "$_ap" ] && [ -x "$_ap" ]; then
+        APP_PROCESS="$_ap"
     fi
+fi
+if [ ! -x "$CMD" ] 2>/dev/null; then
+    _cmd=$(command -v cmd 2>/dev/null) || true
+    [ -n "$_cmd" ] && [ -x "$_cmd" ] && CMD="$_cmd"
+fi
+if [ ! -x "$AM" ] 2>/dev/null; then
+    _am=$(command -v am 2>/dev/null) || true
+    [ -n "$_am" ] && [ -x "$_am" ] && AM="$_am"
+fi
+
+notify_apk_path() {
+    "$PM" path "$NOTIFY_APK_COMPONENT" 2>/dev/null | head -1 | sed 's/^package://'
 }
 
-notify_user_fallback() {
+notify_via_app_process() {
+    pkg="$1"
+    _apk=$(notify_apk_path)
+    if [ -z "$_apk" ] || [ ! -f "$_apk" ]; then
+        return 1
+    fi
+    if [ -z "$APP_PROCESS" ] || [ ! -x "$APP_PROCESS" ]; then
+        return 1
+    fi
+    CLASSPATH="$_apk" "$APP_PROCESS" /system/bin --nice-name=firewall-notify \
+        "$NOTIFY_RUNNER" "$pkg" >>"$LOGFILE" 2>&1
+}
+
+notify_shell_cmd() {
     pkg="$1"
     _intent="intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${pkg};end"
     _text="${pkg} was installed and network access was disabled by default."
-    _post="${CMD} notification post -t 'Internet blocked for new app' -c '${_intent}' 'firewall_default_deny_${pkg}' '${_text}'"
-    if run_as_root "$_post" >>"$LOGFILE" 2>&1; then
-        log "notify: shell notification posted for $pkg"
-        return 0
-    fi
     if [ -x /system/bin/su ]; then
-        /system/bin/su 2000 sh -c "$_post" >>"$LOGFILE" 2>&1 && return 0
+        /system/bin/su 2000 "$CMD" notification post \
+            -t "Internet blocked for new app" \
+            -c "$_intent" \
+            "firewall_default_deny_${pkg}" \
+            "$_text" >>"$LOGFILE" 2>&1 && return 0
     fi
-    return 1
+    "$CMD" notification post \
+        -t "Internet blocked for new app" \
+        -c "$_intent" \
+        "firewall_default_deny_${pkg}" \
+        "$_text" >>"$LOGFILE" 2>&1
 }
 
-notify_via_apk() {
+notify_via_am_direct() {
     pkg="$1"
-    _esc=$(printf '%s' "$pkg" | sed "s/'/'\\\\''/g")
-    _act="${AM} start --user 0 -n ${NOTIFY_APK_COMPONENT}/.PostNotificationActivity --es package '${_esc}'"
-    if run_as_root "$_act" >>"$LOGFILE" 2>&1; then
-        log "notify: activity started for $pkg"
-        return 0
-    fi
-    _svc="${AM} startservice --user 0 -n ${NOTIFY_APK_COMPONENT}/.NotifyService --es package '${_esc}'"
-    if run_as_root "$_svc" >>"$LOGFILE" 2>&1; then
-        log "notify: service started for $pkg"
-        return 0
-    fi
-    _bc="${AM} broadcast --user 0 -a app.firewall.notify.SHOW_BLOCKED -n ${NOTIFY_APK_COMPONENT}/.NotifyReceiver --es package '${_esc}'"
-    if run_as_root "$_bc" >>"$LOGFILE" 2>&1; then
-        log "notify: broadcast sent for $pkg"
-        return 0
-    fi
+    "$AM" start --user 0 \
+        -n "${NOTIFY_APK_COMPONENT}/.PostNotificationActivity" \
+        --es package "$pkg" >>"$LOGFILE" 2>&1 && return 0
+    "$AM" startservice --user 0 \
+        -n "${NOTIFY_APK_COMPONENT}/.NotifyService" \
+        --es package "$pkg" >>"$LOGFILE" 2>&1 && return 0
     return 1
 }
 
 notify_user_inner() {
     pkg="$1"
     sleep 1
-    if "$PM" path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
-        if notify_via_apk "$pkg"; then
+    if notify_via_app_process "$pkg"; then
+        log "notify: app_process posted for $pkg"
+        return 0
+    fi
+    if notify_shell_cmd "$pkg"; then
+        log "notify: cmd notification posted for $pkg"
+        return 0
+    fi
+    if [ -n "$(notify_apk_path)" ]; then
+        if notify_via_am_direct "$pkg"; then
+            log "notify: am started for $pkg"
             return 0
         fi
-        log "WARN: FirewallNotify delivery failed for $pkg; using shell fallback"
-    else
-        log "WARN: FirewallNotify APK missing; using shell fallback for $pkg"
     fi
-    notify_user_fallback "$pkg"
+    log "ERROR: all notify paths failed for $pkg"
+    return 1
 }
 
 notify_user() {
@@ -245,7 +271,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v4"
+log "firewall-watcher build=notify-apk-v6"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"
