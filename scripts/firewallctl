@@ -1,0 +1,12 @@
+#!/system/bin/sh
+# On-device wrapper for firewallctl.
+# Install: push to /data/local/tmp/ together with firewallctl.dex.jar.
+# Run as root, e.g.:  su -c '/data/local/tmp/firewallctl get com.android.chrome'
+DIR="$(cd "$(dirname "$0")" && pwd)"
+JAR="$DIR/firewallctl.dex.jar"
+if [ ! -f "$JAR" ]; then
+    echo "firewallctl: cannot find $JAR" >&2
+    exit 1
+fi
+export CLASSPATH="$JAR"
+exec app_process /system/bin --nice-name=firewallctl app.firewallctl.Main "$@"

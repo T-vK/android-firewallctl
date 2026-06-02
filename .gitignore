@@ -1,0 +1,26 @@
+# Build outputs
+/build/
+
+# Test outputs
+/tests/tmp/
+/tests/*.log
+
+# Editor / IDE
+.idea/
+.vscode/
+*.iml
+.project
+.classpath
+.settings/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local logs
+*.log
+log.txt
+
+# Java tooling
+*.class
+hs_err_pid*.log

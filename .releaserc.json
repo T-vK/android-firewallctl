@@ -1,0 +1,24 @@
+{
+  "branches": ["main", "master"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "make dist VERSION=${nextRelease.version}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "build/firewallctl-*.dex.jar", "label": "firewallctl CLI (dex jar)" },
+          { "path": "build/firewallctl_*_all.deb", "label": "Termux package (.deb)" },
+          { "path": "build/firewall_default_deny_*.zip", "label": "Magisk module (zip)" }
+        ]
+      }
+    ]
+  ]
+}

@@ -1,0 +1,154 @@
+#!/system/bin/sh
+# firewall-watcher: applies POLICY_REJECT_ALL to newly installed user apps.
+#
+# Event-driven via inotifyd on /data/system/. When packages.xml is written
+# (AtomicFile rename + create + close_write), we reconcile pm list packages
+# against a snapshot and apply +REJECT_ALL to anything new (minus the
+# allowlist). A slow safety-net poll covers the case where inotifyd is
+# unavailable or wedged.
+#
+# Modes:
+#   firewall-watcher              daemon (started by service.sh)
+#   firewall-watcher --reconcile  single reconcile pass (manual / safety poll)
+#   firewall-watcher EVT [DIR] FN inotifyd callback (invoked by inotifyd)
+
+STATE_DIR="${FIREWALL_STATE_DIR:-/data/adb/firewall_default_deny}"
+SNAPSHOT="$STATE_DIR/known.txt"
+ALLOWLIST="$STATE_DIR/allowlist.txt"
+LOGFILE="$STATE_DIR/watcher.log"
+LOCK="$STATE_DIR/reconcile.lock"
+WATCH_DIR="${FIREWALL_WATCH_DIR:-/data/system}"
+SAFETY_INTERVAL="${FIREWALL_WATCHER_SAFETY_INTERVAL:-300}"
+
+mkdir -p "$STATE_DIR"
+touch "$ALLOWLIST"
+
+log() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
+}
+
+is_allowlisted() {
+    grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$1"
+}
+
+current_packages() {
+    pm list packages -3 2>/dev/null | sed 's/^package://' | sort -u
+}
+
+notify_user() {
+    pkg="$1"
+    cmd notification post \
+        -S bigtext \
+        -t "Internet blocked for new app" \
+        "firewall_default_deny_$pkg" \
+        "$pkg has been installed and its network access was disabled by default. Open Settings > Apps > $pkg > Mobile data & Wi-Fi to allow." \
+        >/dev/null 2>&1 || true
+}
+
+apply_deny() {
+    pkg="$1"
+    if is_allowlisted "$pkg"; then
+        log "skip $pkg (allowlisted)"
+        return
+    fi
+    if firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
+        log "blocked $pkg"
+        notify_user "$pkg"
+    else
+        log "ERROR: failed to apply policy for $pkg"
+    fi
+}
+
+# Single reconcile pass. Lock collapses concurrent invocations (inotifyd
+# fires multiple events per packages.xml write) into one effective run.
+reconcile() {
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        return 0
+    fi
+    if [ ! -f "$SNAPSHOT" ]; then
+        current_packages > "$SNAPSHOT"
+        log "initial snapshot: $(wc -l < "$SNAPSHOT") user packages"
+        rmdir "$LOCK" 2>/dev/null
+        return 0
+    fi
+    if current=$(current_packages); then
+        new=$(printf '%s\n' "$current" | comm -23 - "$SNAPSHOT" 2>/dev/null)
+        if [ -n "$new" ]; then
+            printf '%s\n' "$new" | while IFS= read -r pkg; do
+                [ -n "$pkg" ] && apply_deny "$pkg"
+            done
+            printf '%s\n' "$current" > "$SNAPSHOT"
+        fi
+    fi
+    rmdir "$LOCK" 2>/dev/null
+}
+
+# Dispatch on invocation style.
+case "$1" in
+    --reconcile)
+        reconcile
+        exit 0
+        ;;
+    "")
+        : # daemon mode, falls through below
+        ;;
+    *)
+        # inotifyd callback. Toybox passes "EVENTS [WATCHED_PATH] FILENAME".
+        # We only care if the changed file is packages.xml; everything else
+        # in /data/system/ is noise.
+        for arg in "$@"; do
+            if [ "$arg" = "packages.xml" ]; then
+                reconcile
+                exit 0
+            fi
+        done
+        exit 0
+        ;;
+esac
+
+# === daemon mode ===
+
+# Trim log on each daemon start.
+if [ -f "$LOGFILE" ] && [ "$(wc -l < "$LOGFILE")" -gt 500 ]; then
+    tail -n 500 "$LOGFILE" > "$LOGFILE.tmp" && mv "$LOGFILE.tmp" "$LOGFILE"
+fi
+
+# Clear stale lock from a previous crashed run.
+rmdir "$LOCK" 2>/dev/null
+
+cleanup() {
+    [ -n "$INOTIFY_SUP_PID" ] && kill "$INOTIFY_SUP_PID" 2>/dev/null
+    rmdir "$LOCK" 2>/dev/null
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+if command -v inotifyd >/dev/null 2>&1; then
+    log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"
+else
+    log "watcher starting (inotifyd MISSING, safety poll ${SAFETY_INTERVAL}s only)"
+fi
+
+# Ensure snapshot exists before we arm the watch.
+reconcile
+
+# Supervise inotifyd: respawn if it exits.
+(
+    while true; do
+        if command -v inotifyd >/dev/null 2>&1; then
+            inotifyd "$0" "$WATCH_DIR" 2>>"$LOGFILE"
+            log "inotifyd exited rc=$?, restarting in 5s"
+            sleep 5
+        else
+            sleep 3600
+        fi
+    done
+) &
+INOTIFY_SUP_PID=$!
+
+# Safety-net poll in foreground.
+while true; do
+    sleep "$SAFETY_INTERVAL"
+    reconcile
+done
