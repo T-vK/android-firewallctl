@@ -97,10 +97,45 @@ Edits take effect on the next install event — no restart required.
 |---|---|---|
 | `FIREWALL_STATE_DIR` | `/data/adb/firewall_default_deny` | State directory location. Mainly for tests. |
 | `FIREWALL_WATCH_DIR` | `/data/system` | Directory watched by `inotifyd`. |
-| `FIREWALL_WATCHER_SAFETY_INTERVAL` | `300` | Safety-net poll period in seconds. The hot path is event-driven; this is belt-and-suspenders. |
+| `FIREWALL_WATCHER_SAFETY_INTERVAL` | `60` | Safety-net poll period in seconds. The hot path is event-driven; this is belt-and-suspenders. |
+| `FIREWALL_INSTALL_SETTLE_SEC` | `15` | Max seconds to wait for a new package to appear in `pm` before applying policy. |
 
 Set them in `service.sh` if you want different defaults baked into the
 module.
+
+### Troubleshooting (module installed but apps stay unrestricted)
+
+On the device (root shell):
+
+```bash
+# Is the watcher running?
+cat /data/adb/firewall_default_deny/watcher.pid
+ps -p "$(cat /data/adb/firewall_default_deny/watcher.pid)" 
+
+# What did it log?
+tail -50 /data/adb/firewall_default_deny/watcher.log
+
+# Can the CLI apply policy manually?
+/system/bin/su 0 /system/bin/firewallctl list-policies
+/system/bin/su 0 /system/bin/firewallctl set <package.name> +REJECT_ALL
+/system/bin/su 0 /system/bin/firewallctl get <package.name>
+
+# Force a reconcile pass (e.g. after fixing allowlist)
+/system/bin/firewall-watcher --reconcile
+```
+
+Common causes:
+
+- **`firewallctl: cannot find …dex.jar`** — fixed in recent builds: the wrapper
+  must resolve `/system/bin/firewallctl.dex.jar` when called as bare
+  `firewallctl` from the watcher (wrong `$0` / cwd).
+- **Policy call fails from `service.sh` context** — watcher now runs
+  `firewallctl` via `su 0` so Binder reaches `netpolicy` under the right
+  SELinux domain.
+- **Install tested within ~1 minute** — if `inotifyd` missed the event, the
+  safety poll (default 60s) must run; use `--reconcile` or wait.
+- **ROM has no `POLICY_REJECT_ALL`** — check `list-policies`; Settings UI may
+  use different flags on some forks.
 
 ---
 
