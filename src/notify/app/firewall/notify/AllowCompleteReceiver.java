@@ -1,5 +1,5 @@
 /*
- * Root watcher signals allow success via am broadcast (no file read from app).
+ * Root watcher signals allow success via broadcast (manifest or dynamic receiver).
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
@@ -18,9 +18,6 @@ public final class AllowCompleteReceiver extends BroadcastReceiver {
     private static final Object LOCK = new Object();
     private static String pendingPkg;
     private static CountDownLatch pendingLatch;
-
-    private AllowCompleteReceiver() {
-    }
 
     static void beginWait(String pkg) {
         synchronized (LOCK) {
@@ -54,12 +51,7 @@ public final class AllowCompleteReceiver extends BroadcastReceiver {
         }
     }
 
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        if (intent == null || !ACTION_ALLOW_COMPLETE.equals(intent.getAction())) {
-            return;
-        }
-        String pkg = intent.getStringExtra(NotifyHelper.EXTRA_PACKAGE);
+    static void signalComplete(String pkg) {
         if (pkg == null || pkg.isEmpty()) {
             return;
         }
@@ -68,5 +60,14 @@ public final class AllowCompleteReceiver extends BroadcastReceiver {
                 pendingLatch.countDown();
             }
         }
+    }
+
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        if (intent == null || !ACTION_ALLOW_COMPLETE.equals(intent.getAction())) {
+            return;
+        }
+        String pkg = intent.getStringExtra(NotifyHelper.EXTRA_PACKAGE);
+        signalComplete(pkg);
     }
 }

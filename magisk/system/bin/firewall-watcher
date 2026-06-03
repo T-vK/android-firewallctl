@@ -81,6 +81,7 @@ wait_for_package() {
 
 NOTIFY_APK_COMPONENT="app.firewall.notify"
 NOTIFY_RUNNER=app.firewall.notify.NotifyRunner
+ALLOW_COMPLETE_RUNNER=app.firewall.notify.AllowCompleteRunner
 
 if [ -x /system/bin/pm ]; then
     AM=/system/bin/am
@@ -114,8 +115,9 @@ notify_apk_path() {
     "$PM" path "$NOTIFY_APK_COMPONENT" 2>/dev/null | head -1 | sed 's/^package://'
 }
 
-notify_via_app_process() {
-    pkg="$1"
+run_notify_apk_runner() {
+    _runner="$1"
+    shift
     _apk=$(notify_apk_path)
     if [ -z "$_apk" ] || [ ! -f "$_apk" ]; then
         return 1
@@ -124,7 +126,12 @@ notify_via_app_process() {
         return 1
     fi
     CLASSPATH="$_apk" "$APP_PROCESS" /system/bin --nice-name=firewall-notify \
-        "$NOTIFY_RUNNER" "$pkg" >>"$LOGFILE" 2>&1
+        "$_runner" "$@" >>"$LOGFILE" 2>&1
+}
+
+notify_via_app_process() {
+    pkg="$1"
+    run_notify_apk_runner "$NOTIFY_RUNNER" "$pkg"
 }
 
 notify_shell_cmd() {
@@ -192,6 +199,16 @@ notify_allow_complete() {
     if [ -z "$_pkg" ]; then
         return 1
     fi
+    if run_notify_apk_runner "$ALLOW_COMPLETE_RUNNER" "$_pkg"; then
+        log "allow: app_process ALLOW_COMPLETE for $_pkg"
+        return 0
+    fi
+    if [ -x "$CMD" ] && "$CMD" activity broadcast --user 0 \
+            -a app.firewall.notify.ALLOW_COMPLETE \
+            --es package "$_pkg" \
+            -p app.firewall.notify >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
     if "$AM" broadcast --user 0 \
             -a app.firewall.notify.ALLOW_COMPLETE \
             --es package "$_pkg" \
@@ -204,7 +221,7 @@ notify_allow_complete() {
             -n app.firewall.notify/.AllowCompleteReceiver >>"$LOGFILE" 2>&1; then
         return 0
     fi
-    log "allow: broadcast ALLOW_COMPLETE failed for $_pkg"
+    log "allow: ALLOW_COMPLETE signal failed for $_pkg"
     return 1
 }
 
@@ -372,7 +389,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v13"
+log "firewall-watcher build=notify-apk-v14"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
