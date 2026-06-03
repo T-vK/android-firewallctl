@@ -775,6 +775,10 @@ case "$1" in
         log "test-notify: firing all paths for $_pkg"
         if notify_user_inner "$_pkg"; then
             echo "OK: notification path succeeded (see $LOGFILE)"
+            if [ -f "$LOGFILE" ]; then
+                echo "--- recent notify lines ---"
+                grep -E 'memdiff-v|test-notify:|notify: |ERROR: notify' "$LOGFILE" 2>/dev/null | tail -15
+            fi
             exit 0
         fi
         echo "FAIL: all notification paths failed (see $LOGFILE)" >&2

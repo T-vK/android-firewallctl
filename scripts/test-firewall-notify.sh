@@ -14,6 +14,16 @@
 
 set -u
 
+# NOTE: adb splits on "|" — do not pipe grep -E patterns through adb shell.
+# Use: adb shell su -c "grep notify /data/adb/firewall_default_deny/watcher.log | tail -20"
+# Or run this script on-device.
+
+show_notify_log() {
+    [ -f "$LOGFILE" ] || return 0
+    echo "--- notify-related log (last 20) ---"
+    grep -E 'memdiff-v|test-notify:|notify: |ERROR: notify' "$LOGFILE" 2>/dev/null | tail -20
+}
+
 PKG="${1:-}"
 if [ -z "$PKG" ]; then
     echo "usage: $0 <package-name>" >&2
@@ -54,7 +64,8 @@ if [ ! -x "$WATCHER" ]; then
 fi
 
 if "$WATCHER" --test-notify "$PKG"; then
-    log "OK — see watcher.log for notify: path=..."
+    log "OK"
+    show_notify_log
     exit 0
 fi
 
