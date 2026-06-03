@@ -24,6 +24,6 @@ EOF
 chmod 0644 "$STATE_DIR/allowlist.txt"
 
 ui_print "- State directory: $STATE_DIR"
-ui_print "- known.txt = install baseline for diff (not policy); allowlist = manual only"
+ui_print "- Baseline in RAM only; allowlist.txt = manual sideload exemptions"
 ui_print "- Edit $STATE_DIR/allowlist.txt to exempt sideloaded packages"
 ui_print "- Reboot to start the watcher"
