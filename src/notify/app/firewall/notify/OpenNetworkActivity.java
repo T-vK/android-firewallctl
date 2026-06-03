@@ -22,6 +22,7 @@ public final class OpenNetworkActivity extends Activity {
             } catch (Throwable ignored) {
                 /* no handler */
             }
+            NotifyHelper.cancel(this, pkg);
         }
         finish();
     }

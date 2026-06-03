@@ -41,7 +41,7 @@ final class AllowUiDone implements Runnable {
             NotifyHelper.cancel(ctx, pkg);
             Toast.makeText(ctx, "Network allowed for " + pkg, Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(ctx, "Could not allow network (queue failed)", Toast.LENGTH_LONG).show();
+            Toast.makeText(ctx, "Could not allow network (allow failed)", Toast.LENGTH_LONG).show();
         }
         if (pendingResult != null) {
             pendingResult.finish();

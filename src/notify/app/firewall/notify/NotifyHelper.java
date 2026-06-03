@@ -79,9 +79,13 @@ public final class NotifyHelper {
     }
 
     public static void cancel(Context context, String pkg) {
+        if (context == null || pkg == null || pkg.isEmpty()) {
+            return;
+        }
+        Context app = context.getApplicationContext();
         NotificationManager nm =
-                (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null && pkg != null && !pkg.isEmpty()) {
+                (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
             nm.cancel(notificationTag(pkg), NOTIFICATION_ID);
         }
     }
