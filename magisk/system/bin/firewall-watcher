@@ -206,7 +206,12 @@ record_snapshot_pkg() {
 
 prune_uninstalled_from_snapshot() {
     _cur="$STATE_DIR/.reconcile_pkgnames"
-    current_packages >"$_cur"
+    if [ -n "${1:-}" ]; then
+        printf '%s
+' "$1" >"$_cur"
+    else
+        current_packages >"$_cur"
+    fi
     [ -s "$_cur" ] || return 0
     _tmp="$STATE_DIR/.snapshot_pruned"
     while IFS= read -r _row || [ -n "$_row" ]; do
@@ -620,7 +625,19 @@ start_allow_fifo_reader() {
 }
 
 
-apply_deny() {
+notify_block_candidates() {
+    _list="$1"
+    [ -s "$_list" ] || return 0
+    while IFS= read -r pkg || [ -n "$pkg" ]; do
+        [ -n "$pkg" ] || continue
+        if is_allowlisted "$pkg" && ! should_force_block "$pkg"; then
+            continue
+        fi
+        notify_user "$pkg"
+    done <"$_list"
+}
+
+apply_block_policy() {
     pkg="$1"
     if is_allowlisted "$pkg" && ! should_force_block "$pkg"; then
         log "skip $pkg (allowlisted)"
@@ -628,17 +645,23 @@ apply_deny() {
         record_snapshot_pkg "$pkg"
         return 0
     fi
-    # Package was just listed by pm list packages -3; do not re-check with a
-    # stricter pm filter (breaks on LineageOS for valid third-party installs).
-    notify_user "$pkg"
     if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
         clear_uninstalled_pkg "$pkg"
         return 0
     fi
-    log "ERROR: firewallctl set +REJECT_ALL failed for $pkg (notification already shown)"
+    log "ERROR: firewallctl set +REJECT_ALL failed for $pkg"
     run_firewallctl list-policies >> "$LOGFILE" 2>&1 || true
     return 1
+}
+
+# Notify-only when reconcile lock is held (packages.list already changed).
+reconcile_notify_only() {
+    _current="$1"
+    _nf="$STATE_DIR/.reconcile_notify_only"
+    collect_block_candidates "$_current" "$_nf"
+    notify_block_candidates "$_nf"
+    rm -f "$_nf"
 }
 
 reconcile_stale_lock() {
@@ -658,6 +681,10 @@ reconcile_stale_lock() {
 reconcile() {
     reconcile_stale_lock
     if ! mkdir "$LOCK" 2>/dev/null; then
+        _cur=$(current_packages) || return 0
+        if [ -f "$INIT_FLAG" ] && [ -s "$SNAPSHOT" ]; then
+            reconcile_notify_only "$_cur"
+        fi
         return 0
     fi
     if ! current=$(current_packages) || [ -z "$current" ]; then
@@ -676,10 +703,10 @@ reconcile() {
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
-    prune_uninstalled_from_snapshot
     _newfile="$STATE_DIR/.reconcile_new"
     collect_block_candidates "$current" "$_newfile"
     if [ ! -s "$_newfile" ]; then
+        prune_uninstalled_from_snapshot "$current"
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
@@ -692,14 +719,17 @@ reconcile() {
         return 0
     fi
     log "reconcile: $_nnew package(s) to block"
+    notify_block_candidates "$_newfile"
+    prune_uninstalled_from_snapshot "$current"
     failfile="$STATE_DIR/.reconcile_failed"
     : > "$failfile"
     _donefile="$STATE_DIR/.reconcile_done"
     : > "$_donefile"
     while IFS= read -r pkg || [ -n "$pkg" ]; do
         [ -n "$pkg" ] || continue
-        if apply_deny "$pkg"; then
-            printf '%s\n' "$pkg" >> "$_donefile"
+        if apply_block_policy "$pkg"; then
+            printf '%s
+' "$pkg" >> "$_donefile"
         else
             echo "$pkg" >> "$failfile"
         fi
@@ -711,7 +741,8 @@ reconcile() {
     done < "$_donefile"
     rm -f "$_donefile"
     if [ -s "$failfile" ]; then
-        log "reconcile: will retry failed: $(tr '\n' ' ' < "$failfile")"
+        log "reconcile: will retry failed: $(tr '
+' ' ' < "$failfile")"
     fi
     rm -f "$failfile"
     rmdir "$LOCK" 2>/dev/null
@@ -787,7 +818,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v28"
+log "firewall-watcher build=notify-apk-v29"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
@@ -803,7 +834,7 @@ start_allow_fifo_reader
 (
     while true; do
         if command -v inotifyd >/dev/null 2>&1; then
-            _targets="$WATCH_DIR"
+            _targets="$PACKAGES_LIST $WATCH_DIR/packages.xml"
             [ -e "$ALLOW_QUEUE_LOCAL" ] && _targets="$_targets $ALLOW_QUEUE_LOCAL:w"
             [ -e "$ALLOW_QUEUE" ] && _targets="$_targets $ALLOW_QUEUE:w"
             # shellcheck disable=SC2086
