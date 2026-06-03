@@ -15,7 +15,7 @@ assert() {
 DOC_DIR="$PROJECT_DIR/docs"
 
 # Required documentation files exist.
-for f in ARCHITECTURE.md STATE.md COMPATIBILITY.md TROUBLESHOOTING.md DEVELOPMENT.md; do
+for f in ARCHITECTURE.md BUILD.md STATE.md COMPATIBILITY.md TROUBLESHOOTING.md DEVELOPMENT.md; do
     assert "docs/$f exists" "[ -f '$DOC_DIR/$f' ]"
 done
 
@@ -23,13 +23,16 @@ done
 readme="$PROJECT_DIR/README.md"
 assert "README links to ARCHITECTURE.md" "grep -qF 'docs/ARCHITECTURE.md' '$readme'"
 assert "README links to COMPATIBILITY.md" "grep -qF 'docs/COMPATIBILITY.md' '$readme'"
+assert "README links to BUILD.md" "grep -qF 'docs/BUILD.md' '$readme'"
+assert "README uses curl for releases" "grep -qF 'api.github.com/repos/T-vK/android-firewallctl/releases/latest' '$readme'"
+assert "README CLI quick start does not use make" "! grep -qE '^make( |$)' '$readme'"
 
 # README must not describe obsolete known.txt snapshot.
 assert "README does not list known.txt in state tree" \
     "! grep -qE '^├── known\.txt|snapshot at.*known\.txt' '$readme'"
 
 # User-facing docs must state in-memory baseline (not disk known.txt).
-for doc in "$readme" "$DOC_DIR/ARCHITECTURE.md" "$DOC_DIR/STATE.md"; do
+for doc in "$DOC_DIR/ARCHITECTURE.md" "$DOC_DIR/STATE.md"; do
     base=$(basename "$doc")
     assert "$base mentions in-memory baseline" \
         "grep -qiE 'in-memory|in memory' '$doc'"

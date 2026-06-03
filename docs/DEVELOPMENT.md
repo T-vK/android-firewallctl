@@ -1,34 +1,8 @@
 # Development
 
-Guide for building, testing, and releasing **android-firewallctl** from source.
+Guide for contributors: testing, CI, git hooks, and release process.
 
-## Prerequisites
-
-| Tool | Used for |
-|---|---|
-| `make`, `javac` (8+) | CLI dex jar |
-| `zip`, `unzip`, `dpkg-dev` | Magisk zip, Termux deb |
-| `d8` / `dx` **or** network + Java 11+ | DEX (Makefile can fetch R8) |
-| **ANDROID_HOME** + SDK 34 platform & build-tools | `FirewallNotify.apk` only |
-
-## Build targets
-
-```bash
-make              # build/firewallctl.dex.jar
-make deb          # build/firewallctl_<version>_all.deb
-make magisk       # build/firewall_default_deny_v<version>.zip
-make dist VERSION=1.2.3   # version-stamped release artifacts
-make clean
-```
-
-`VERSION` defaults to `0.0.0` locally; CI passes the semantic-release version.
-
-### Install CLI to a connected device
-
-```bash
-make install
-make run ARGS="list-policies"
-```
+**Building artifacts from source:** see [BUILD.md](BUILD.md).
 
 ## Tests
 
@@ -52,7 +26,7 @@ Add checks by creating `tests/test-*.sh`; `tests/run-tests.sh` auto-discovers th
 - **Watcher logic** — stubbed `pm` / `firewallctl` / `am` / `cmd`; in-memory baseline, allowlist, reinstall, safety drops.
 - **Packaging** — deb paths, Magisk zip entries, dex magic.
 - **Shellcheck** — all repo shell scripts (with Android-specific exceptions documented in the test).
-- **Documentation** — `test-docs.sh` guards against stale terms (e.g. `known.txt` as production state).
+- **Documentation** — `tests/test-docs.sh` guards against stale terms (e.g. `known.txt` as production state).
 
 ### What is not covered
 
@@ -60,7 +34,7 @@ Add checks by creating `tests/test-*.sh`; `tests/run-tests.sh` auto-discovers th
 - Notification UI on API 33+
 - Magisk boot timing
 
-Manual checks on the [reference device](COMPATIBILITY.md) remain the source of truth for behavior.
+Manual checks on the [reference stack](COMPATIBILITY.md) remain the source of truth for behavior.
 
 ## CI & releases
 
@@ -75,17 +49,6 @@ version-stamped artifacts. Commit messages should follow
 [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, …).
 
 Config: `.releaserc.json`.
-
-## Project layout
-
-```text
-src/app/firewallctl/Main.java     # CLI
-src/notify/                       # FirewallNotify APK sources
-magisk/                           # Module template (watcher, service.sh, …)
-scripts/                          # firewallctl wrapper, build-notify-apk.sh, diagnostics
-tests/                            # Host test scripts
-docs/                             # User & architecture documentation
-```
 
 ## Diagnostic scripts (on device)
 
