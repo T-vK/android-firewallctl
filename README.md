@@ -57,19 +57,18 @@ adb push build/firewall_default_deny_*.zip /sdcard/
 # Magisk Manager → Modules → Install from storage → reboot
 ```
 
-After reboot, a long-running watcher daemon runs as root. It:
+After reboot, a watcher daemon runs as root. It:
 
-1. Reads the current user-app list from `packages.list` / `pm list` into
-   **RAM** (no `known.txt` on disk).
-2. Watches `packages.list` and `packages.xml` via `inotifyd`. Callbacks only
-   poke a wake fifo; the daemon diffs the new list against its in-memory
-   baseline (new package names and UID changes / reinstalls).
-3. For each change (except manual allowlist entries on **new** installs),
-   posts a **FirewallNotify** notification first, then applies
-   `firewallctl set <pkg> +REJECT_ALL` on a background queue.
-4. Ignores untrusted reads (fewer than five user apps) and suspicious drops
-   (baseline had many apps, current read is tiny) without using stale disk
-   state.
+1. Watches `/data/system/` via `inotifyd`. When `packages.xml` changes
+   (i.e. PMS just committed an install), it reconciles `pm list packages -3`
+   against a snapshot at `/data/adb/firewall_default_deny/known.txt`.
+2. For each new third-party package not on the allowlist, it invokes
+   `firewallctl set <pkg> +REJECT_ALL`. The change is **immediately
+   reflected in the system Settings UI**.
+3. Posts a shell-level notification via `cmd notification`.
+4. End-to-end latency from `close_write` on `packages.xml` to policy
+   applied is typically 150–400 ms — fast enough to win the race against
+   most "Open" taps post-install.
 
 
 ### Allowlist
@@ -98,7 +97,7 @@ Edits take effect on the next install event — no restart required.
 |---|---|---|
 | `FIREWALL_STATE_DIR` | `/data/adb/firewall_default_deny` | State directory location. Mainly for tests. |
 | `FIREWALL_WATCH_DIR` | `/data/system` | Directory watched by `inotifyd`. |
-| `FIREWALL_WATCHER_SAFETY_INTERVAL` | `300` | Safety-net poll period in seconds. The hot path is event-driven; this is belt-and-suspenders. |
+| `FIREWALL_WATCHER_SAFETY_INTERVAL` | `15` | Safety-net poll period in seconds. Install detection is normally inotify-driven; this is backup if inotifyd fails. |
 
 Set them in `service.sh` if you want different defaults baked into the
 module.
