@@ -19,18 +19,18 @@ notify_new_pkg() {
     [ -n "$_pkg" ] || return 1
     _when=$(date '+%H:%M:%S' 2>/dev/null || date)
     _title="New user app installed"
-    _text="$_when — $_pkg"
+    _text="$_when - $_pkg"
     _tag="install_detect_${_pkg}"
-    _intent="intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${_pkg};end"
 
+    # No -c intent URI: many ROMs reject intent:#Intent;... (unknown EXTRA type).
     if [ "$(id -u 2>/dev/null)" = "0" ]; then
-        "$CMD" notification post -t "$_title" -c "$_intent" "$_tag" "$_text" 2>/dev/null && return 0
+        "$CMD" notification post -t "$_title" "$_tag" "$_text" 2>/dev/null && return 0
     fi
     if [ -x /system/bin/su ]; then
-        /system/bin/su 2000 "$CMD" notification post -t "$_title" -c "$_intent" "$_tag" "$_text" \
+        /system/bin/su 2000 "$CMD" notification post -t "$_title" "$_tag" "$_text" \
             2>/dev/null && return 0
     fi
-    "$CMD" notification post -t "$_title" -c "$_intent" "$_tag" "$_text" 2>/dev/null
+    "$CMD" notification post -t "$_title" "$_tag" "$_text" 2>/dev/null
 }
 
 detect_new() {
