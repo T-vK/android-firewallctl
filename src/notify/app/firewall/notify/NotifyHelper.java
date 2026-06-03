@@ -13,6 +13,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
 
@@ -24,8 +26,9 @@ public final class NotifyHelper {
     public static final String EXTRA_WHEN = "when";
     public static final String KIND_INSTALL_DETECT = "install_detect";
 
-    private static final String CHANNEL_ID = "firewall_default_deny";
-    private static final String CHANNEL_NAME = "Firewall default deny";
+    /** v2 channel: heads-up, sound, bypass DND; user may need to re-enable after upgrade. */
+    private static final String CHANNEL_ID = "firewall_block_alert_v2";
+    private static final String CHANNEL_NAME = "New app blocked (urgent)";
     private static final int NOTIFICATION_ID = 0x464444;
     private static final int INSTALL_DETECT_NOTIFICATION_ID = 0x464445;
     private static final int FLAG_IMMUTABLE = 0x04000000;
@@ -66,8 +69,12 @@ public final class NotifyHelper {
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(
                         text + "\n\nPackage: " + pkg))
-                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setOngoing(true)
+                .setAutoCancel(false)
                 .setOnlyAlertOnce(false)
+                .setDefaults(Notification.DEFAULT_ALL)
                 .setContentIntent(settingsPi)
                 .addAction(new Notification.Action.Builder(0, "Allow network", allowPi).build())
                 .addAction(new Notification.Action.Builder(0, "Network settings", settingsPi)
@@ -81,7 +88,6 @@ public final class NotifyHelper {
             throw new RuntimeException(e);
         }
     }
-
 
     /** Visible notification for install-detect benchmark (not a block alert). */
     public static void showInstallDetected(Context context, String pkg, String when) {
@@ -103,7 +109,7 @@ public final class NotifyHelper {
 
         int iconId = android.R.drawable.stat_notify_more;
         if (iconId == 0) {
-            iconId = android.R.drawable.ic_dialog_info;
+            iconId = android.R.drawable.ic_dialog_alert;
         }
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
@@ -118,8 +124,9 @@ public final class NotifyHelper {
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(text + "\n\nPackage: " + pkg))
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
-                .setOnlyAlertOnce(false)
                 .setContentIntent(settingsPi);
 
         try {
@@ -151,10 +158,35 @@ public final class NotifyHelper {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return;
         }
+        int importance = channelImportance();
         NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH);
-        channel.setDescription("Alerts when a newly installed app is blocked by default");
+                CHANNEL_ID, CHANNEL_NAME, importance);
+        channel.setDescription("Immediate alert when a new app is blocked by default");
+        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        channel.enableVibration(true);
+        channel.enableLights(true);
+        channel.setBypassDnd(true);
+        Uri sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        if (sound != null) {
+            channel.setSound(
+                    sound,
+                    new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build());
+        }
         nm.createNotificationChannel(channel);
+    }
+
+    private static int channelImportance() {
+        if (Build.VERSION.SDK_INT >= 34) {
+            try {
+                return NotificationManager.class.getField("IMPORTANCE_MAX").getInt(null);
+            } catch (Throwable ignored) {
+                /* fall through */
+            }
+        }
+        return NotificationManager.IMPORTANCE_HIGH;
     }
 
     static Intent allowIntent(Context context, String pkg) {

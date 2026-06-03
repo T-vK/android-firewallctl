@@ -220,4 +220,26 @@ run_watcher --reconcile
 assert "T8: allowlist ignored on reinstall" \
     "grep -qF 'set com.reinstall.allow +REJECT_ALL' '$TMP/firewallctl.log'"
 
+# ---- T9: allowlist.txt does not exempt reinstall ----
+reset_state
+write_pm <<EOF
+package:com.reinstall.allowlisted
+EOF
+write_uids <<EOF
+com.reinstall.allowlisted 10701
+EOF
+run_watcher --reconcile
+echo "com.reinstall.allowlisted" > "$STATE/allowlist.txt"
+echo "com.reinstall.allowlisted 10701" > "$STATE/known.txt"
+echo "com.reinstall.allowlisted" >> "$STATE/recent_uninstalled"
+write_uids <<EOF
+com.reinstall.allowlisted 10799
+EOF
+rm -f "$TMP/firewallctl.log"
+run_watcher --reconcile
+assert "T9: allowlist.txt does not exempt reinstall" \
+    "grep -qF 'set com.reinstall.allowlisted +REJECT_ALL' '$TMP/firewallctl.log'"
+assert "T9: not skip allowlisted on reinstall" \
+    "! grep -qF 'skip com.reinstall.allowlisted (allowlisted)' '$STATE/watcher.log'"
+
 exit "$fail"

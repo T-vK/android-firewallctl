@@ -59,12 +59,23 @@ notify_app_allowlist() {
     echo "$_base/files/allowlist.txt"
 }
 
-# Only module allowlist.txt exempts blocking (manual). Notify APK list is not used.
+# allowlist.txt = manual admin exemptions only (see customize.sh).
+# "Allow network" in the notification does NOT add to allowlist.txt.
 is_allowlisted() {
     _pkg="$1"
     grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$_pkg"
 }
 
+remove_from_module_allowlist() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 0
+    [ ! -f "$ALLOWLIST" ] && return 0
+    _t="$STATE_DIR/.allowlist_tmp"
+    grep -vxF "$_pkg" "$ALLOWLIST" 2>/dev/null >"$_t" || : >"$_t"
+    mv "$_t" "$ALLOWLIST"
+}
+
+# Reinstall must block even if allowlist.txt still has a stale entry (e.g. old "Allow" button).
 should_force_block() {
     _pkg="$1"
     if was_recently_uninstalled "$_pkg"; then
@@ -76,6 +87,36 @@ should_force_block() {
         return 0
     fi
     return 1
+}
+
+should_skip_blocking() {
+    _pkg="$1"
+    if ! is_allowlisted "$_pkg"; then
+        return 1
+    fi
+    if should_force_block "$_pkg"; then
+        return 1
+    fi
+    return 0
+}
+
+notified_stamp() {
+    echo "$STATE_DIR/.notified/${1}"
+}
+
+mark_notified() {
+    _pkg="$1"
+    mkdir -p "$STATE_DIR/.notified"
+    touch "$(notified_stamp "$_pkg")"
+}
+
+was_notified_recently() {
+    _pkg="$1"
+    _stamp=$(notified_stamp "$_pkg")
+    [ -f "$_stamp" ] || return 1
+    _now=$(date +%s 2>/dev/null) || return 0
+    _mt=$(stat -c %Y "$_stamp" 2>/dev/null) || return 1
+    [ $((_now - _mt)) -lt 120 ]
 }
 
 remove_from_notify_allowlist() {
@@ -145,6 +186,7 @@ snapshot_uid_for_pkg() {
 note_uninstalled_pkg() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
+    remove_from_module_allowlist "$_pkg"
     grep -qxF "$_pkg" "$RECENT_UNINSTALL" 2>/dev/null && return 0
     printf '%s\n' "$_pkg" >>"$RECENT_UNINSTALL"
 }
@@ -433,9 +475,9 @@ notify_shell_cmd() {
 
 notify_via_am_direct() {
     pkg="$1"
-    "$AM" start --user 0 \
+    "$AM" start --user 0 -f 0x10000000 \
         -n "${NOTIFY_APK_COMPONENT}/.PostNotificationActivity" \
-        --es package "$pkg" >>"$LOGFILE" 2>&1 && return 0
+        --es package "$pkg" >/dev/null 2>>"$LOGFILE" && return 0
     "$AM" startservice --user 0 \
         -n "${NOTIFY_APK_COMPONENT}/.NotifyService" \
         --es package "$pkg" >>"$LOGFILE" 2>&1 && return 0
@@ -462,11 +504,16 @@ notify_user_inner() {
 
 notify_user() {
     pkg="$1"
+    if was_notified_recently "$pkg"; then
+        return 0
+    fi
     if [ -n "${FIREWALL_NOTIFY_CMD:-}" ]; then
         "$FIREWALL_NOTIFY_CMD" "$pkg" >>"$LOGFILE" 2>&1
+        mark_notified "$pkg"
         return
     fi
     if notify_user_inner "$pkg"; then
+        mark_notified "$pkg"
         log "notify: posted for $pkg"
     else
         log "ERROR: notify failed for $pkg"
@@ -567,6 +614,7 @@ allow_one_package() {
     fi
     if /system/bin/firewall-allow-app "$_pkg" >>"$LOGFILE" 2>&1; then
         log "allow: allowed $_pkg"
+        record_snapshot_pkg "$_pkg"
         notify_allow_complete "$_pkg" "$_marker"
         return 0
     fi
@@ -630,7 +678,10 @@ notify_block_candidates() {
     [ -s "$_list" ] || return 0
     while IFS= read -r pkg || [ -n "$pkg" ]; do
         [ -n "$pkg" ] || continue
-        if is_allowlisted "$pkg" && ! should_force_block "$pkg"; then
+        if should_skip_blocking "$pkg"; then
+            continue
+        fi
+        if was_notified_recently "$pkg"; then
             continue
         fi
         notify_user "$pkg"
@@ -639,11 +690,14 @@ notify_block_candidates() {
 
 apply_block_policy() {
     pkg="$1"
-    if is_allowlisted "$pkg" && ! should_force_block "$pkg"; then
+    if should_skip_blocking "$pkg"; then
         log "skip $pkg (allowlisted)"
         clear_uninstalled_pkg "$pkg"
         record_snapshot_pkg "$pkg"
         return 0
+    fi
+    if is_allowlisted "$pkg"; then
+        remove_from_module_allowlist "$pkg"
     fi
     if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
@@ -661,6 +715,26 @@ reconcile_notify_only() {
     _nf="$STATE_DIR/.reconcile_notify_only"
     collect_block_candidates "$_current" "$_nf"
     notify_block_candidates "$_nf"
+    rm -f "$_nf"
+}
+
+# Immediate notify on package DB writes (same event source as install-detect benchmark).
+# Runs without the reconcile lock so a slow block pass cannot delay the heads-up.
+reconcile_install_event() {
+    [ -f "$INIT_FLAG" ] || return 0
+    [ ! -s "$SNAPSHOT" ] && return 0
+    _current=$(current_packages) || return 0
+    [ -z "$_current" ] && return 0
+    _nf="$STATE_DIR/.reconcile_install_event"
+    collect_block_candidates "$_current" "$_nf"
+    [ -s "$_nf" ] || return 0
+    while IFS= read -r _pkg || [ -n "$_pkg" ]; do
+        [ -n "$_pkg" ] || continue
+        if should_skip_blocking "$_pkg"; then
+            continue
+        fi
+        notify_user "$_pkg"
+    done <"$_nf"
     rm -f "$_nf"
 }
 
@@ -789,6 +863,7 @@ case "$1" in
         ;;
     *)
         if is_package_db_event "$@"; then
+            reconcile_install_event
             reconcile
         elif is_allow_queue_event "$@"; then
             process_allow_queue
@@ -818,7 +893,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v29"
+log "firewall-watcher build=notify-apk-v31"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
