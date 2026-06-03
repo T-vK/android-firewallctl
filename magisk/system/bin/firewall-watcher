@@ -229,8 +229,7 @@ bootstrap_snapshot() {
     current_packages | while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         _line=$(snapshot_line_for "$_pkg")
-        printf '%s
-' "$_line" >>"$_tmp"
+        printf '%s\n' "$_line" >>"$_tmp"
     done
     mv "$_tmp" "$SNAPSHOT"
     touch "$INIT_FLAG"
@@ -243,6 +242,46 @@ MASS_BLOCK_LIMIT="${FIREWALL_MASS_BLOCK_LIMIT:-10}"
 
 needs_bootstrap() {
     [ ! -f "$INIT_FLAG" ]
+}
+
+
+collect_block_candidates() {
+    _current="$1"
+    _out="$2"
+    _tmp="$STATE_DIR/.reconcile_block_tmp"
+    : >"$_out"
+    _names="$STATE_DIR/.reconcile_cur_names"
+    _snap="$STATE_DIR/.reconcile_snap_names"
+    printf '%s\n' "$_current" | sort -u >"$_names"
+    snapshot_pkg_names >"$_snap"
+    comm -23 "$_names" "$_snap" >>"$_out" 2>/dev/null
+    rm -f "$_names" "$_snap"
+    if [ -f "$RECENT_UNINSTALL" ]; then
+        while IFS= read -r _pkg || [ -n "$_pkg" ]; do
+            [ -z "$_pkg" ] && continue
+            printf '%s\n' "$_current" | grep -qxF "$_pkg" || continue
+            printf '%s\n' "$_pkg" >>"$_out"
+        done <"$RECENT_UNINSTALL"
+    fi
+    if [ -r "$PACKAGES_LIST" ]; then
+        awk -v snap="$SNAPSHOT" '
+        BEGIN {
+            while ((getline line < snap) > 0) {
+                n = split(line, a, " ")
+                if (n >= 2) olduid[a[1]] = a[2]
+                else if (n >= 1 && a[1] != "") nameonly[a[1]] = 1
+            }
+        }
+        NF >= 1 {
+            pkg = $1
+            newuid = $2
+            if (pkg in olduid && newuid != "" && olduid[pkg] != newuid) print pkg
+            else if ((pkg in nameonly) && newuid != "") print pkg
+        }
+        ' "$PACKAGES_LIST" >>"$_out" 2>/dev/null
+    fi
+    sort -u "$_out" >"$_tmp" 2>/dev/null || : >"$_tmp"
+    mv "$_tmp" "$_out"
 }
 
 mass_block_detected() {
@@ -422,7 +461,11 @@ notify_user() {
         "$FIREWALL_NOTIFY_CMD" "$pkg" >>"$LOGFILE" 2>&1
         return
     fi
-    notify_user_inner "$pkg" >>"$LOGFILE" 2>&1
+    if notify_user_inner "$pkg"; then
+        log "notify: posted for $pkg"
+    else
+        log "ERROR: notify failed for $pkg"
+    fi
 }
 
 
@@ -587,13 +630,13 @@ apply_deny() {
     fi
     # Package was just listed by pm list packages -3; do not re-check with a
     # stricter pm filter (breaks on LineageOS for valid third-party installs).
+    notify_user "$pkg"
     if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
         clear_uninstalled_pkg "$pkg"
-        notify_user "$pkg"
         return 0
     fi
-    log "ERROR: firewallctl set +REJECT_ALL failed for $pkg"
+    log "ERROR: firewallctl set +REJECT_ALL failed for $pkg (notification already shown)"
     run_firewallctl list-policies >> "$LOGFILE" 2>&1 || true
     return 1
 }
@@ -613,7 +656,6 @@ reconcile_stale_lock() {
 }
 
 reconcile() {
-    process_allow_queue
     reconcile_stale_lock
     if ! mkdir "$LOCK" 2>/dev/null; then
         return 0
@@ -636,13 +678,7 @@ reconcile() {
     fi
     prune_uninstalled_from_snapshot
     _newfile="$STATE_DIR/.reconcile_new"
-    : > "$_newfile"
-    printf '%s\n' "$current" | while IFS= read -r _pkg; do
-        [ -n "$_pkg" ] || continue
-        if should_block_pkg "$_pkg"; then
-            printf '%s\n' "$_pkg" >> "$_newfile"
-        fi
-    done
+    collect_block_candidates "$current" "$_newfile"
     if [ ! -s "$_newfile" ]; then
         rmdir "$LOCK" 2>/dev/null
         return 0
@@ -679,6 +715,7 @@ reconcile() {
     fi
     rm -f "$failfile"
     rmdir "$LOCK" 2>/dev/null
+    process_allow_queue
 }
 
 is_allow_queue_event() {
@@ -750,7 +787,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v27"
+log "firewall-watcher build=notify-apk-v28"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
