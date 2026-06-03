@@ -39,13 +39,17 @@ install_notify_apk() {
     cp "$_apk" /data/local/tmp/FirewallNotify-install.apk
     chmod 644 /data/local/tmp/FirewallNotify-install.apk
     if pm path app.firewall.notify >/dev/null 2>&1; then
-        pm install -r /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1 \
-            && log "FirewallNotify: updated user APK" \
-            || log "FirewallNotify: pm install -r failed"
+        if pm install -r /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+            log "FirewallNotify: updated user APK"
+        else
+            log "FirewallNotify: pm install -r failed"
+        fi
     else
-        pm install /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1 \
-            && log "FirewallNotify: installed user APK" \
-            || log "FirewallNotify: pm install failed"
+        if pm install /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+            log "FirewallNotify: installed user APK"
+        else
+            log "FirewallNotify: pm install failed"
+        fi
     fi
     pm grant app.firewall.notify android.permission.POST_NOTIFICATIONS 2>/dev/null || true
 }
