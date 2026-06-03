@@ -4,6 +4,11 @@
  */
 package app.firewall.notify;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.util.Log;
 
 import java.io.File;
@@ -28,17 +33,66 @@ final class AllowHelper {
     }
 
     /** Queue allow to root watcher; returns true when watcher confirms success. */
-    static boolean allowPackage(String pkg) {
+    static boolean allowPackage(Context ctx, String pkg) {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
-        AllowCompleteReceiver.beginWait(pkg);
-        boolean queued = writeFifo(pkg) || appendQueue(pkg);
-        if (!queued) {
-            AllowCompleteReceiver.clear();
-            return runAllowAsRoot(pkg);
+        BroadcastReceiver receiver = registerAllowReceiver(ctx, pkg);
+        try {
+            AllowCompleteReceiver.beginWait(pkg);
+            boolean queued = writeFifo(pkg) || appendQueue(pkg);
+            if (!queued) {
+                AllowCompleteReceiver.clear();
+                return runAllowAsRoot(pkg);
+            }
+            return AllowCompleteReceiver.awaitComplete(pkg, ALLOW_WAIT_MS);
+        } finally {
+            unregisterAllowReceiver(ctx, receiver);
         }
-        return AllowCompleteReceiver.awaitComplete(pkg, ALLOW_WAIT_MS);
+    }
+
+    private static BroadcastReceiver registerAllowReceiver(Context ctx, final String pkg) {
+        if (ctx == null) {
+            return null;
+        }
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent intent) {
+                if (intent == null
+                        || !AllowCompleteReceiver.ACTION_ALLOW_COMPLETE.equals(
+                                intent.getAction())) {
+                    return;
+                }
+                String p = intent.getStringExtra(NotifyHelper.EXTRA_PACKAGE);
+                if (pkg.equals(p)) {
+                    AllowCompleteReceiver.signalComplete(pkg);
+                }
+            }
+        };
+        IntentFilter filter =
+                new IntentFilter(AllowCompleteReceiver.ACTION_ALLOW_COMPLETE);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                ctx.registerReceiver(receiver, filter);
+            }
+            return receiver;
+        } catch (Throwable t) {
+            Log.w(TAG, "allow receiver register: " + t.getMessage());
+            return null;
+        }
+    }
+
+    private static void unregisterAllowReceiver(Context ctx, BroadcastReceiver receiver) {
+        if (ctx == null || receiver == null) {
+            return;
+        }
+        try {
+            ctx.unregisterReceiver(receiver);
+        } catch (Throwable ignored) {
+            /* already unregistered */
+        }
     }
 
     private static boolean writeFifo(String pkg) {
