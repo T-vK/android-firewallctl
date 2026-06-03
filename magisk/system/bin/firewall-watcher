@@ -80,6 +80,13 @@ package_visible() {
 
 wait_for_package() {
     pkg="$1"
+    if [ "$INSTALL_SETTLE_SEC" -le 0 ]; then
+        if package_visible "$pkg"; then
+            return 0
+        fi
+        log "ERROR: $pkg not visible to pm"
+        return 1
+    fi
     waited=0
     while :; do
         if package_visible "$pkg"; then
@@ -465,6 +472,9 @@ reconcile() {
                 log "reconcile: snapshot unchanged; failed: $(tr '\n' ' ' < "$failfile")"
             fi
             rm -f "$failfile"
+        else
+            # Drop uninstalled packages so a later reinstall is detected as new.
+            printf '%s\n' "$current" > "$SNAPSHOT"
         fi
     fi
     rmdir "$LOCK" 2>/dev/null
@@ -539,7 +549,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v18"
+log "firewall-watcher build=notify-apk-v19"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
