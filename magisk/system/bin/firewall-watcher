@@ -9,7 +9,7 @@
 # Modes:
 #   firewall-watcher                 daemon (service.sh)
 #   firewall-watcher --wake [files]  inotifyd stub: signal daemon, exit
-#   firewall-watcher --reconcile     wake daemon or one-shot if no daemon
+#   firewall-watcher --reconcile     wake daemon or one-shot reconcile
 #   firewall-watcher --allow PKG     allow network (or queue if blocking)
 
 STATE_DIR="${FIREWALL_STATE_DIR:-/data/adb/firewall_default_deny}"
@@ -20,7 +20,6 @@ WAKE_FIFO="$STATE_DIR/package_events.fifo"
 LOCK="$STATE_DIR/reconcile.lock"
 WATCH_DIR="${FIREWALL_WATCH_DIR:-/data/system}"
 PACKAGES_LIST="${FIREWALL_PACKAGES_LIST:-/data/system/packages.list}"
-SAFETY_INTERVAL="${FIREWALL_WATCHER_SAFETY_INTERVAL:-0}"
 NOTIFY_CHANNEL_READY=0
 NOTIFY_VERIFY_MAX="${FIREWALL_NOTIFY_VERIFY_MAX:-5}"
 NOTIFY_VERIFY_SLEEP="${FIREWALL_NOTIFY_VERIFY_SLEEP:-0.05}"
@@ -918,12 +917,17 @@ build_inotify_targets() {
 run_inotifyd_once() {
     _targets=$(build_inotify_targets)
     if [ -z "$_targets" ]; then
-        log "inotifyd: no watch targets under $WATCH_DIR"
+        log "ERROR: inotifyd: no watch targets (WATCH_DIR=$WATCH_DIR PACKAGES_LIST=$PACKAGES_LIST)"
         return 1
     fi
-    log "inotifyd: $WATCHER_BIN $_targets"
+    log "inotifyd: exec $WATCHER_BIN $_targets"
     # shellcheck disable=SC2086
     inotifyd "$WATCHER_BIN" $_targets 2>>"$LOGFILE"
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        log "ERROR: inotifyd exited rc=$_rc (install detection down until fixed; see inotifyd errors above)"
+    fi
+    return "$_rc"
 }
 
 is_package_db_event() {
@@ -1015,6 +1019,8 @@ case "$1" in
             wake_daemon "inotify:package-db"
         elif is_allow_queue_event "$@"; then
             wake_daemon "inotify:allow-queue"
+        else
+            log "ERROR: inotifyd callback ignored unknown event args: $*"
         fi
         exit 0
         ;;
@@ -1036,7 +1042,6 @@ cleanup() {
     [ -n "$ALLOW_QUEUE_PID" ] && kill "$ALLOW_QUEUE_PID" 2>/dev/null
     [ -n "$ALLOW_FIFO_PID" ] && kill "$ALLOW_FIFO_PID" 2>/dev/null
     [ -n "$BLOCK_WORKER_PID" ] && kill "$BLOCK_WORKER_PID" 2>/dev/null
-    [ -n "$SAFETY_POLL_PID" ] && kill "$SAFETY_POLL_PID" 2>/dev/null
     [ -n "$INOTIFY_SUP_PID" ] && kill "$INOTIFY_SUP_PID" 2>/dev/null
     rm -f "$PIDFILE" 2>/dev/null
     rmdir "$LOCK" 2>/dev/null
@@ -1045,7 +1050,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v46"
+log "firewall-watcher build=memdiff-v47"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker
@@ -1057,38 +1062,23 @@ notify_ensure_channel || true
 NOTIFY_CHANNEL_READY=1
 
 if command -v inotifyd >/dev/null 2>&1; then
-    log "daemon: inotifyd event-driven (no periodic poll unless FIREWALL_WATCHER_SAFETY_INTERVAL>0)"
+    log "daemon: inotifyd only (no periodic package poll — ever)"
     (
         while true; do
             run_inotifyd_once
             _irc=$?
-            log "inotifyd exited rc=$_irc, restarting in 5s"
+            if [ "$_irc" -ne 0 ]; then
+                log "ERROR: inotifyd failed rc=$_irc; retry in 5s (no poll fallback — fix log above)"
+            else
+                log "inotifyd: exited rc=0; restarting in 5s"
+            fi
             sleep 5
         done
     ) &
     INOTIFY_SUP_PID=$!
 else
-    log "daemon: inotifyd MISSING"
-fi
-
-_poll="${SAFETY_INTERVAL:-0}"
-if ! command -v inotifyd >/dev/null 2>&1; then
-    [ "$_poll" -eq 0 ] 2>/dev/null && _poll=15
-    log "daemon: safety poll every ${_poll}s (inotify unavailable)"
-elif [ "$_poll" -gt 0 ] 2>/dev/null; then
-    log "daemon: optional safety poll every ${_poll}s (backup)"
-else
-    _poll=0
-fi
-
-if [ "$_poll" -gt 0 ] 2>/dev/null; then
-    (
-        while true; do
-            sleep "$_poll"
-            wake_daemon "safety-poll"
-        done
-    ) &
-    SAFETY_POLL_PID=$!
+    log "ERROR: inotifyd not in PATH — install detection disabled until fixed"
+    log "ERROR: expected toybox inotifyd; manual wake only: firewall-watcher --reconcile"
 fi
 
 while read -r _wake <"$WAKE_FIFO" 2>/dev/null; do
