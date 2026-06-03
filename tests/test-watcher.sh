@@ -205,3 +205,38 @@ assert "T7b: fresh install after uninstall blocked" \
     "grep -qF 'set com.example.reinstall.me +REJECT_ALL' '$TMP/firewallctl.log'"
 
 exit "$fail"
+
+# ---- T8: empty/missing snapshot must not mass-block existing apps ----
+rm -f "$STATE/known.txt" "$TMP/firewallctl.log" "$TMP/notify.log"
+cat > "$PM_LIST" <<EOF2
+package:com.example.existing.a
+package:com.example.existing.b
+package:com.example.existing.c
+package:com.example.existing.d
+package:com.example.existing.e
+package:com.example.existing.f
+package:com.example.existing.g
+package:com.example.existing.h
+package:com.example.existing.i
+package:com.example.existing.j
+package:com.example.existing.k
+EOF2
+write_packages_list <<EOF2
+com.example.existing.a 10001
+com.example.existing.b 10002
+com.example.existing.c 10003
+com.example.existing.d 10004
+com.example.existing.e 10005
+com.example.existing.f 10006
+com.example.existing.g 10007
+com.example.existing.h 10008
+com.example.existing.i 10009
+com.example.existing.j 10010
+com.example.existing.k 10011
+EOF2
+export FIREWALL_MASS_BLOCK_LIMIT=10
+run_watcher --reconcile
+assert "T8: bootstrap does not invoke firewallctl" "[ ! -f '$TMP/firewallctl.log' ]"
+assert "T8: bootstrap logged" "grep -qF 'bootstrap snapshot:' '$STATE/watcher.log'"
+assert "T8: snapshot lists all installed apps" "[ \$(wc -l < '$STATE/known.txt') -eq 11 ]"
+

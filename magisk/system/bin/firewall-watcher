@@ -100,27 +100,29 @@ snapshot_line_for() {
     fi
 }
 
-snapshot_matches_install() {
+snapshot_has_pkg() {
     _pkg="$1"
-    _line=$(snapshot_line_for "$_pkg")
-    grep -qxF "$_line" "$SNAPSHOT" 2>/dev/null
+    grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null && return 0
+    grep -q "^${_pkg} " "$SNAPSHOT" 2>/dev/null
 }
 
+snapshot_uid_for_pkg() {
+    _pkg="$1"
+    grep -m1 "^${_pkg} " "$SNAPSHOT" 2>/dev/null | awk '{print $2}'
+}
+
+# Block only: brand-new package name, or same name after reinstall (uid changed).
 should_block_pkg() {
     _pkg="$1"
-    if snapshot_matches_install "$_pkg"; then
-        return 1
+    if ! snapshot_has_pkg "$_pkg"; then
+        return 0
     fi
-    _uid=$(package_uid "$_pkg")
-    if [ -n "$_uid" ]; then
-        _old=$(grep -m1 "^${_pkg} " "$SNAPSHOT" 2>/dev/null) || true
-        if [ -n "$_old" ] && [ "$_old" != "$_pkg $_uid" ]; then
-            return 0
-        fi
+    _newuid=$(package_uid "$_pkg")
+    _olduid=$(snapshot_uid_for_pkg "$_pkg")
+    if [ -n "$_newuid" ] && [ -n "$_olduid" ] && [ "$_newuid" != "$_olduid" ]; then
+        return 0
     fi
-    grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null && return 1
-    grep -q "^${_pkg} " "$SNAPSHOT" 2>/dev/null && return 1
-    return 0
+    return 1
 }
 
 record_snapshot_pkg() {
@@ -156,6 +158,32 @@ prune_uninstalled_from_snapshot() {
     done <"$SNAPSHOT" >"$_tmp" 2>/dev/null || : >"$_tmp"
     mv "$_tmp" "$SNAPSHOT"
     rm -f "$_cur"
+}
+
+# Record every currently installed user app; never block during bootstrap.
+bootstrap_snapshot() {
+    _tmp="$SNAPSHOT.tmp.$$"
+    : >"$_tmp"
+    current_packages | while IFS= read -r _pkg; do
+        [ -n "$_pkg" ] || continue
+        _line=$(snapshot_line_for "$_pkg")
+        printf '%s\n' "$_line" >>"$_tmp"
+    done
+    mv "$_tmp" "$SNAPSHOT"
+    log "bootstrap snapshot: $(wc -l < "$SNAPSHOT") packages (existing apps not blocked)"
+}
+
+# If the snapshot is missing/empty or a reconcile would block too many apps at once,
+# rebuild known.txt without touching network policy (prevents mass-block accidents).
+MASS_BLOCK_LIMIT="${FIREWALL_MASS_BLOCK_LIMIT:-10}"
+
+needs_bootstrap() {
+    [ ! -s "$SNAPSHOT" ]
+}
+
+mass_block_detected() {
+    _n="$1"
+    [ "$_n" -gt "$MASS_BLOCK_LIMIT" ]
 }
 
 run_firewallctl() {
@@ -531,11 +559,8 @@ reconcile() {
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
-    if [ ! -f "$SNAPSHOT" ]; then
-        printf '%s\n' "$current" | while IFS= read -r _pkg; do
-            [ -n "$_pkg" ] && record_snapshot_pkg "$_pkg"
-        done
-        log "initial snapshot: $(wc -l < "$SNAPSHOT") user packages"
+    if needs_bootstrap; then
+        bootstrap_snapshot
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
@@ -545,38 +570,45 @@ reconcile() {
     printf '%s\n' "$current" | while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         if should_block_pkg "$_pkg"; then
-            printf '%s
-' "$_pkg" >> "$_newfile"
+            printf '%s\n' "$_pkg" >> "$_newfile"
         fi
     done
-    if [ -s "$_newfile" ]; then
-        log "reconcile: $(wc -l < "$_newfile") package(s) to block"
-        failfile="$STATE_DIR/.reconcile_failed"
-        : > "$failfile"
-        _donefile="$STATE_DIR/.reconcile_done"
-        : > "$_donefile"
-        while IFS= read -r pkg || [ -n "$pkg" ]; do
-            [ -n "$pkg" ] || continue
-            if apply_deny "$pkg"; then
-                printf '%s\n' "$pkg" >> "$_donefile"
-            else
-                echo "$pkg" >> "$failfile"
-            fi
-        done < "$_newfile"
-        rm -f "$_newfile"
-        while IFS= read -r _pkg || [ -n "$_pkg" ]; do
-            [ -n "$_pkg" ] || continue
-            record_snapshot_pkg "$_pkg"
-        done < "$_donefile"
-        rm -f "$_donefile"
-        if [ -s "$failfile" ]; then
-            log "reconcile: will retry failed: $(tr '\n' ' ' < "$failfile")"
-        fi
-        rm -f "$failfile"
+    if [ ! -s "$_newfile" ]; then
+        rmdir "$LOCK" 2>/dev/null
+        return 0
     fi
+    _nnew=$(wc -l < "$_newfile")
+    if mass_block_detected "$_nnew"; then
+        log "SAFETY: $_nnew packages would be blocked (limit $MASS_BLOCK_LIMIT); rebuilding snapshot without blocking"
+        bootstrap_snapshot
+        rmdir "$LOCK" 2>/dev/null
+        return 0
+    fi
+    log "reconcile: $_nnew package(s) to block"
+    failfile="$STATE_DIR/.reconcile_failed"
+    : > "$failfile"
+    _donefile="$STATE_DIR/.reconcile_done"
+    : > "$_donefile"
+    while IFS= read -r pkg || [ -n "$pkg" ]; do
+        [ -n "$pkg" ] || continue
+        if apply_deny "$pkg"; then
+            printf '%s\n' "$pkg" >> "$_donefile"
+        else
+            echo "$pkg" >> "$failfile"
+        fi
+    done < "$_newfile"
+    rm -f "$_newfile"
+    while IFS= read -r _pkg || [ -n "$_pkg" ]; do
+        [ -n "$_pkg" ] || continue
+        record_snapshot_pkg "$_pkg"
+    done < "$_donefile"
+    rm -f "$_donefile"
+    if [ -s "$failfile" ]; then
+        log "reconcile: will retry failed: $(tr '\n' ' ' < "$failfile")"
+    fi
+    rm -f "$failfile"
     rmdir "$LOCK" 2>/dev/null
 }
-
 
 is_allow_queue_event() {
     for arg in "$@"; do
@@ -647,7 +679,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v23"
+log "firewall-watcher build=notify-apk-v24"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
