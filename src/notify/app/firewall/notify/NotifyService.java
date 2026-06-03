@@ -32,6 +32,7 @@ public final class NotifyService extends Service {
         } catch (Throwable t) {
             Throwable c = t.getCause() != null ? t.getCause() : t;
             System.err.println("NotifyService: " + c.getClass().getSimpleName() + ": " + c.getMessage());
+            t.printStackTrace();
         }
         stopSelf(startId);
         return START_NOT_STICKY;

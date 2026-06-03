@@ -1,13 +1,12 @@
 /*
- * Posts a notification via app_process: starts NotifyService (foreground) in-app.
+ * Posts via NotifyHelper.showBlocked in the app's package context (app_process).
+ * Does not startForegroundService here — that throws RemoteException off-context.
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
 
 import android.app.NotificationManager;
 import android.content.Context;
-import android.content.Intent;
-import android.os.Build;
 import android.os.Looper;
 
 public final class NotifyRunner {
@@ -46,24 +45,17 @@ public final class NotifyRunner {
                 System.exit(0);
             }
 
-            Intent svc = new Intent(ctx, NotifyService.class);
-            svc.putExtra(NotifyHelper.EXTRA_PACKAGE, pkg);
-            svc.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ctx.startForegroundService(svc);
-            } else {
-                ctx.startService(svc);
-            }
-
+            NotifyHelper.showBlocked(ctx, pkg);
             if (NotifyHelper.waitForBlockedNotificationActive(nm, pkg)) {
                 System.out.println("NotifyRunner: posted for " + pkg);
                 System.exit(0);
             }
-            System.err.println("NotifyRunner: service started but notification not active");
+            System.err.println("NotifyRunner: notify() called but not active (dropped by system)");
             System.exit(1);
         } catch (Throwable t) {
             Throwable c = t.getCause() != null ? t.getCause() : t;
             System.err.println("NotifyRunner: " + c.getClass().getSimpleName() + ": " + c.getMessage());
+            t.printStackTrace();
             System.exit(1);
         }
     }

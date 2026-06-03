@@ -217,11 +217,17 @@ public final class NotifyHelper {
         if (nm != null) {
             nm.notify(tag, NOTIFICATION_ID, notification);
         }
-        service.startForeground(NOTIFICATION_ID, notification);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            service.stopForeground(Service.STOP_FOREGROUND_DETACH);
-        } else {
-            service.stopForeground(false);
+        try {
+            service.startForeground(NOTIFICATION_ID, notification);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                service.stopForeground(Service.STOP_FOREGROUND_DETACH);
+            } else {
+                service.stopForeground(false);
+            }
+        } catch (Throwable e) {
+            System.err.println("NotifyService: startForeground failed: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            /* nm.notify above may still have posted */
         }
     }
 
