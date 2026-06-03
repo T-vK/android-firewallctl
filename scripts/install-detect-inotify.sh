@@ -1,17 +1,39 @@
 #!/system/bin/sh
 # Event-driven new user-app detector (no poll loop).
-# Uses toybox inotifyd on packages.list / packages.xml.
+# Posts a notification for each newly seen user app.
 #
 #   adb push scripts/install-detect-inotify.sh /data/local/tmp/
 #   adb shell su -c 'sh /data/local/tmp/install-detect-inotify.sh'
 
 BASE=/data/local/tmp/.ni_base
 CUR=/data/local/tmp/.ni_cur
+CMD="${CMD:-/system/bin/cmd}"
+[ -x "$CMD" ] || CMD=cmd
+
+notify_new_pkg() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    _when=$(date '+%H:%M:%S' 2>/dev/null || date)
+    _title="New user app installed"
+    _text="$_when — $_pkg"
+    _tag="install_detect_${_pkg}"
+    _intent="intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${_pkg};end"
+
+    if [ "$(id -u 2>/dev/null)" = "0" ]; then
+        "$CMD" notification post -t "$_title" -c "$_intent" "$_tag" "$_text" 2>/dev/null && return 0
+    fi
+    if [ -x /system/bin/su ]; then
+        /system/bin/su 2000 "$CMD" notification post -t "$_title" -c "$_intent" "$_tag" "$_text" \
+            2>/dev/null && return 0
+    fi
+    "$CMD" notification post -t "$_title" -c "$_intent" "$_tag" "$_text" 2>/dev/null
+}
 
 detect_new() {
     pm list packages -3 2>/dev/null | sed 's/^package://' | sort -u >"$CUR"
     comm -23 "$CUR" "$BASE" 2>/dev/null | while read -r p; do
-        [ -n "$p" ] && printf '%s NEW %s\n' "$(date +%H:%M:%S)" "$p"
+        [ -n "$p" ] || continue
+        notify_new_pkg "$p" || printf '%s NEW %s (notify failed)\n' "$(date +%H:%M:%S)" "$p" >&2
     done
     cp "$CUR" "$BASE"
 }
@@ -41,6 +63,6 @@ command -v inotifyd >/dev/null 2>&1 || {
 }
 
 pm list packages -3 2>/dev/null | sed 's/^package://' | sort -u >"$BASE"
-echo "baseline $(wc -l <"$BASE" | tr -d ' ') user packages; watching packages.list + packages.xml"
-echo "install an app; Ctrl+C to stop"
+echo "baseline $(wc -l <"$BASE" | tr -d ' ') user packages; notifications on new installs"
+echo "watching packages.list + packages.xml (Ctrl+C to stop)"
 exec inotifyd "$0" /data/system/packages.list /data/system/packages.xml
