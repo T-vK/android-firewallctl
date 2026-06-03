@@ -39,6 +39,10 @@ public final class NotifyRunner {
             NotifyHelper.ensureChannel(nm);
 
             String pkg = args[0];
+            if (NotifyHelper.PACKAGE_CHANNEL_INIT.equals(pkg)) {
+                System.out.println("NotifyRunner: channel ready (" + NotifyHelper.CHANNEL_ID + ")");
+                System.exit(0);
+            }
             if (args.length >= 2 && NotifyHelper.KIND_INSTALL_DETECT.equals(args[1])) {
                 NotifyHelper.showInstallDetected(ctx, pkg, null);
                 System.out.println("NotifyRunner: install_detect posted for " + pkg);

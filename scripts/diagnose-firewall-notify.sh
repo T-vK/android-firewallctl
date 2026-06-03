@@ -35,7 +35,7 @@ dumpsys notification --noredact 2>/dev/null | grep -A12 "key='app.firewall.notif
 
 echo ""
 echo "=== Channels for app.firewall.notify ==="
-dumpsys notification --noredact 2>/dev/null | grep -E 'app.firewall.notify|firewall_block_alert' | head -20
+dumpsys notification --noredact 2>/dev/null | grep -E 'app.firewall.notify|firewall_default_deny' | head -20
 
 echo ""
 echo "=== Recent watcher notify lines ==="

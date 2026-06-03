@@ -57,6 +57,7 @@ fi
 
 NOTIFY_APK_COMPONENT="app.firewall.notify"
 NOTIFY_RUNNER=app.firewall.notify.NotifyRunner
+NOTIFY_CHANNEL="${FIREWALL_NOTIFY_CHANNEL:-firewall_default_deny}"
 
 if [ ! -x "$APP_PROCESS" ] 2>/dev/null; then
     _ap=$(command -v app_process 2>/dev/null) || true
@@ -360,18 +361,23 @@ notify_shell_cmd() {
     _body="${_pkg} was installed and network access was disabled by default."
     _err="$STATE_DIR/.notify_cmd_err"
     if [ -x "$CMD" ]; then
+        _cmd_post() {
+            "$@" notification post                 -p "$NOTIFY_APK_COMPONENT"                 -o "$NOTIFY_CHANNEL"                 -S bigtext                 -t "$_title"                 "$_tag"                 "$_body"
+        }
         if [ "$(id -u 2>/dev/null)" = "0" ]; then
-            if "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body"                     >>"$LOGFILE" 2>"$_err"; then
+            if _cmd_post "$CMD" >>"$LOGFILE" 2>"$_err"; then
                 notify_verify_posted "$_pkg" && return 0
                 log "notify: cmd post ok but verify failed for $_pkg"
             else
-                log "notify: cmd post failed (root): $(head -1 "$_err" 2>/dev/null)"
+                log "notify: cmd post failed (root): $(tr '\n' ' ' <"$_err" 2>/dev/null | head -c 400)"
             fi
         fi
         if [ -x /system/bin/su ]; then
-            if /system/bin/su 2000 "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body"                     >>"$LOGFILE" 2>"$_err"; then
+            if _cmd_post /system/bin/su 2000 "$CMD" >>"$LOGFILE" 2>"$_err"; then
                 notify_verify_posted "$_pkg" && return 0
                 log "notify: cmd post (su 2000) ok but verify failed for $_pkg"
+            else
+                log "notify: cmd post failed (su 2000): $(tr '\n' ' ' <"$_err" 2>/dev/null | head -c 400)"
             fi
         fi
         [ -s "$_err" ] && cat "$_err" >>"$LOGFILE" 2>/dev/null
@@ -408,6 +414,9 @@ notify_via_foreground_service() {
         [ -s "$_err" ] && cat "$_err" >>"$LOGFILE" 2>/dev/null
         : >"$_err"
     done
+    if [ -s "$_err" ]; then
+        log "notify: foreground_service paths failed: $(tr '\n' ' ' <"$_err" | head -c 300)"
+    fi
     rm -f "$_err" 2>/dev/null
     return 1
 }
@@ -518,36 +527,55 @@ run_notify_apk_runner() {
     return 1
 }
 
-notify_user_inner() {
-    _pkg="$1"
-    [ -n "$_pkg" ] || return 1
-    ensure_notify_ready
 
-    log "notify: trying paths for $_pkg"
-    if notify_via_broadcast "$_pkg"; then
-        log "notify: path=broadcast pkg=$_pkg"
+notify_ensure_channel() {
+    _err="$STATE_DIR/.notify_init_err"
+  : >"$_err"
+    if notify_via_foreground_service "__firewall_notify_init__"; then
         return 0
     fi
-    if notify_via_foreground_service "$_pkg"; then
-        log "notify: path=foreground_service pkg=$_pkg"
+    if run_notify_apk_runner "$NOTIFY_RUNNER" "__firewall_notify_init__"; then
         return 0
     fi
-    if notify_via_activity "$_pkg"; then
-        log "notify: path=activity pkg=$_pkg"
+    if [ -s "$_err" ]; then
+        cat "$_err" >>"$LOGFILE" 2>/dev/null
+    fi
+    rm -f "$_err" 2>/dev/null
+    log "notify: channel init best-effort failed (will still try post)"
+    return 1
+}
+
+notify_user_inner() {
+    _nui_pkg="$1"
+    [ -n "$_nui_pkg" ] || return 1
+    ensure_notify_ready
+    notify_ensure_channel || true
+
+    log "notify: trying paths for $_nui_pkg"
+    if notify_via_broadcast "$_nui_pkg"; then
+        log "notify: path=broadcast pkg=$_nui_pkg"
         return 0
     fi
-    if notify_shell_cmd "$_pkg"; then
-        log "notify: path=cmd pkg=$_pkg"
+    if notify_via_foreground_service "$_nui_pkg"; then
+        log "notify: path=foreground_service pkg=$_nui_pkg"
         return 0
     fi
-    if run_notify_apk_runner "$NOTIFY_RUNNER" "$_pkg"; then
-        log "notify: path=app_process pkg=$_pkg"
+    if notify_via_activity "$_nui_pkg"; then
+        log "notify: path=activity pkg=$_nui_pkg"
         return 0
     fi
-    if notify_via_service "$_pkg"; then
+    if notify_shell_cmd "$_nui_pkg"; then
+        log "notify: path=cmd pkg=$_nui_pkg"
+        return 0
+    fi
+    if run_notify_apk_runner "$NOTIFY_RUNNER" "$_nui_pkg"; then
+        log "notify: path=app_process pkg=$_nui_pkg"
+        return 0
+    fi
+    if notify_via_service "$_nui_pkg"; then
         sleep 0.4
-        if notify_verify_posted "$_pkg"; then
-            log "notify: path=service pkg=$_pkg"
+        if notify_verify_posted "$_nui_pkg"; then
+            log "notify: path=service pkg=$_nui_pkg"
             return 0
         fi
     fi
@@ -889,15 +917,15 @@ case "$1" in
         if notify_user_inner "$_pkg"; then
             echo "OK: notification path succeeded (see $LOGFILE)"
             if [ -f "$LOGFILE" ]; then
-                echo "--- recent notify lines ---"
-                grep -E 'memdiff-v|test-notify:|notify: |ERROR: notify' "$LOGFILE" 2>/dev/null | tail -15
+                echo "--- watcher.log (this run) ---"
+                awk -v m="$_test_mark" '$0 ~ m {p=1} p' "$LOGFILE" 2>/dev/null | tail -25
             fi
             exit 0
         fi
         echo "FAIL: all notification paths failed (see $LOGFILE)" >&2
         if [ -f "$LOGFILE" ]; then
-            echo "--- watcher.log (notify) ---"
-            grep -E 'notify:|NotifyRunner|NotifyService|notification post|ERROR: notify' "$LOGFILE" 2>/dev/null | tail -25
+            echo "--- watcher.log (this run) ---"
+            awk -v m="$_test_mark" '$0 ~ m {p=1} p' "$LOGFILE" 2>/dev/null | tail -40
         fi
         exit 1
         ;;
@@ -947,7 +975,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v41"
+log "firewall-watcher build=memdiff-v43"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker

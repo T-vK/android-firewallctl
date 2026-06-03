@@ -28,7 +28,8 @@ public final class NotifyHelper {
     public static final String KIND_INSTALL_DETECT = "install_detect";
     public static final String PACKAGE_CHANNEL_INIT = "__firewall_notify_init__";
 
-    private static final String CHANNEL_ID = "firewall_block_alert_v4";
+    /** Must match channel id on upgraded devices (only this id may exist). */
+    public static final String CHANNEL_ID = "firewall_default_deny";
     private static final String CHANNEL_NAME = "New app blocked (urgent)";
     public static final int NOTIFICATION_ID = 0x464444;
     private static final int INSTALL_DETECT_NOTIFICATION_ID = 0x464445;

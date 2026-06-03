@@ -96,7 +96,8 @@ wake_watcher() {
   else
     sh "$WATCHER" --wake
   fi
-  sleep 0.6
+  # Channel init + notify paths run before block enqueue.
+  sleep 2.5
 }
 
 # ---- T1: baseline on start does not block ----
@@ -168,7 +169,7 @@ com.example.another 10105
 EOF
 rm -f "$TMP/firewallctl.log"
 sh "$WATCHER" --wake packages.list
-sleep 0.6
+sleep 2.5
 assert "T4: another blocked" \
     "grep -qF 'set com.example.another +REJECT_ALL' '$TMP/firewallctl.log'"
 
