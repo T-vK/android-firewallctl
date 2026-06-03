@@ -1,0 +1,14 @@
+#!/bin/sh
+# Commits in this repo must use the local T-vK identity, not Cursor Agent defaults.
+name=$(git config user.name 2>/dev/null) || exit 0
+email=$(git config user.email 2>/dev/null) || exit 0
+case "$email" in
+    *cursoragent@cursor.com*|*@cursor.com)
+        echo "pre-commit: refuse Cursor Agent identity; run ./scripts/setup-git.sh" >&2
+        exit 1
+        ;;
+esac
+export GIT_AUTHOR_NAME="$name"
+export GIT_AUTHOR_EMAIL="$email"
+export GIT_COMMITTER_NAME="$name"
+export GIT_COMMITTER_EMAIL="$email"
