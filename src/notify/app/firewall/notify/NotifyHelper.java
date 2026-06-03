@@ -20,10 +20,14 @@ public final class NotifyHelper {
 
     public static final String ACTION_SHOW_BLOCKED = "app.firewall.notify.SHOW_BLOCKED";
     public static final String EXTRA_PACKAGE = "package";
+    public static final String EXTRA_KIND = "kind";
+    public static final String EXTRA_WHEN = "when";
+    public static final String KIND_INSTALL_DETECT = "install_detect";
 
     private static final String CHANNEL_ID = "firewall_default_deny";
     private static final String CHANNEL_NAME = "Firewall default deny";
     private static final int NOTIFICATION_ID = 0x464444;
+    private static final int INSTALL_DETECT_NOTIFICATION_ID = 0x464445;
     private static final int FLAG_IMMUTABLE = 0x04000000;
 
     private NotifyHelper() {
@@ -73,6 +77,55 @@ public final class NotifyHelper {
             nm.notify(tag, NOTIFICATION_ID, builder.build());
         } catch (Throwable e) {
             System.err.println("FirewallNotify: notify failed: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            throw new RuntimeException(e);
+        }
+    }
+
+
+    /** Visible notification for install-detect benchmark (not a block alert). */
+    public static void showInstallDetected(Context context, String pkg, String when) {
+        if (pkg == null || pkg.isEmpty()) {
+            return;
+        }
+        NotificationManager nm =
+                (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) {
+            return;
+        }
+        ensureChannel(nm);
+
+        String label = resolveAppLabel(context, pkg);
+        String title = "New user app installed";
+        String time = when != null && !when.isEmpty() ? when : "";
+        String text = time.isEmpty() ? label : time + " - " + label;
+        String tag = "install_detect_" + pkg;
+
+        int iconId = android.R.drawable.stat_notify_more;
+        if (iconId == 0) {
+            iconId = android.R.drawable.ic_dialog_info;
+        }
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
+        Intent details = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        details.setData(Uri.parse("package:" + pkg));
+        details.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        PendingIntent settingsPi = PendingIntent.getActivity(
+                context, pkg.hashCode() + 200, details, flags);
+
+        Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID)
+                .setSmallIcon(iconId)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text + "\n\nPackage: " + pkg))
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(false)
+                .setContentIntent(settingsPi);
+
+        try {
+            nm.notify(tag, INSTALL_DETECT_NOTIFICATION_ID, builder.build());
+        } catch (Throwable e) {
+            System.err.println("FirewallNotify: install_detect notify failed: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
             throw new RuntimeException(e);
         }

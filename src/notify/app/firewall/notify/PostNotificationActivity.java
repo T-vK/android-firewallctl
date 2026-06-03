@@ -14,7 +14,13 @@ public final class PostNotificationActivity extends Activity {
         super.onCreate(savedInstanceState);
         String pkg = getIntent().getStringExtra(NotifyHelper.EXTRA_PACKAGE);
         if (pkg != null && !pkg.isEmpty()) {
-            NotifyHelper.showBlocked(getApplicationContext(), pkg);
+            String kind = getIntent().getStringExtra(NotifyHelper.EXTRA_KIND);
+            if (NotifyHelper.KIND_INSTALL_DETECT.equals(kind)) {
+                String when = getIntent().getStringExtra(NotifyHelper.EXTRA_WHEN);
+                NotifyHelper.showInstallDetected(getApplicationContext(), pkg, when);
+            } else {
+                NotifyHelper.showBlocked(getApplicationContext(), pkg);
+            }
         }
         finish();
     }

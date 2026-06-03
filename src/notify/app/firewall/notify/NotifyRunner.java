@@ -26,8 +26,13 @@ public final class NotifyRunner {
             Looper.prepareMainLooper();
             grantNotificationPermission();
             Context ctx = getAppContext();
-            NotifyHelper.showBlocked(ctx, args[0]);
-            System.out.println("NotifyRunner: posted for " + args[0]);
+            if (args.length >= 2 && NotifyHelper.KIND_INSTALL_DETECT.equals(args[1])) {
+                NotifyHelper.showInstallDetected(ctx, args[0], null);
+                System.out.println("NotifyRunner: install_detect posted for " + args[0]);
+            } else {
+                NotifyHelper.showBlocked(ctx, args[0]);
+                System.out.println("NotifyRunner: posted for " + args[0]);
+            }
             System.exit(0);
         } catch (Throwable t) {
             Throwable c = t.getCause() != null ? t.getCause() : t;

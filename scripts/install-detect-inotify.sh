@@ -1,36 +1,62 @@
 #!/system/bin/sh
 # Event-driven new user-app detector (no poll loop).
-# Posts a notification for each newly seen user app.
+# Posts a visible notification via FirewallNotify (not cmd/shell channel).
 #
 #   adb push scripts/install-detect-inotify.sh /data/local/tmp/
 #   adb shell su -c 'sh /data/local/tmp/install-detect-inotify.sh'
 #
-# inotifyd must exec the handler; /data/local/tmp is often noexec (Permission denied).
-# This script installs a copy under /data/adb/ and runs inotifyd on that path.
+# Requires FirewallNotify (Magisk module priv-app). Rebuild/update module after
+# APK changes so install_detect notifications are supported.
 
 BASE=/data/local/tmp/.ni_base
 CUR=/data/local/tmp/.ni_cur
 RUNNER=/data/adb/firewall_default_deny/install-detect-inotify.sh
-CMD="${CMD:-/system/bin/cmd}"
-[ -x "$CMD" ] || CMD=cmd
+NOTIFY_PKG=app.firewall.notify
+AM="${AM:-/system/bin/am}"
+APP_PROCESS="${APP_PROCESS:-/system/bin/app_process}"
+[ -x "$AM" ] || AM=am
+[ -x "$APP_PROCESS" ] || APP_PROCESS=app_process
+
+notify_apk_path() {
+    _p=$(pm path "$NOTIFY_PKG" 2>/dev/null | head -1 | sed 's/^package://')
+    [ -n "$_p" ] && [ -f "$_p" ] && echo "$_p"
+}
 
 notify_new_pkg() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 1
     _when=$(date '+%H:%M:%S' 2>/dev/null || date)
+
+    # FirewallNotify channel (IMPORTANCE_HIGH) — visible unlike cmd shell_cmd.
+    if pm path "$NOTIFY_PKG" >/dev/null 2>&1; then
+        if "$AM" start --user 0 \
+                -n "${NOTIFY_PKG}/.PostNotificationActivity" \
+                --es package "$_pkg" \
+                --es kind install_detect \
+                --es when "$_when" \
+                -f 0x10000000 >/dev/null 2>&1; then
+            return 0
+        fi
+        _apk=$(notify_apk_path) || true
+        if [ -n "$_apk" ] && [ -x "$APP_PROCESS" ]; then
+            if CLASSPATH="$_apk" "$APP_PROCESS" /system/bin --nice-name=install-detect \
+                    app.firewall.notify.NotifyRunner "$_pkg" install_detect >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+    fi
+
+    # Fallback: cmd posts to shell_cmd (often hidden — enable Shell app notifications).
+    _CMD="${CMD:-/system/bin/cmd}"
+    [ -x "$_CMD" ] || _CMD=cmd
     _title="New user app installed"
     _text="$_when - $_pkg"
     _tag="install_detect_${_pkg}"
-
-    # No -c intent URI: many ROMs reject intent:#Intent;... (unknown EXTRA type).
     if [ "$(id -u 2>/dev/null)" = "0" ]; then
-        "$CMD" notification post -t "$_title" "$_tag" "$_text" 2>/dev/null && return 0
+        "$_CMD" notification post -t "$_title" -S bigtext "$_tag" "$_text" >/dev/null 2>&1 && return 0
     fi
-    if [ -x /system/bin/su ]; then
-        /system/bin/su 2000 "$CMD" notification post -t "$_title" "$_tag" "$_text" \
-            2>/dev/null && return 0
-    fi
-    "$CMD" notification post -t "$_title" "$_tag" "$_text" 2>/dev/null
+    /system/bin/su 2000 "$_CMD" notification post -t "$_title" -S bigtext "$_tag" "$_text" \
+        >/dev/null 2>&1
 }
 
 detect_new() {
@@ -76,6 +102,10 @@ fi
 mkdir -p /data/adb/firewall_default_deny
 cp "$_src" "$RUNNER"
 chmod 755 "$RUNNER"
+
+if ! pm path "$NOTIFY_PKG" >/dev/null 2>&1; then
+    echo "WARN: $NOTIFY_PKG not installed; notifications may be hidden (Shell channel)" >&2
+fi
 
 pm list packages -3 2>/dev/null | sed 's/^package://' | sort -u >"$BASE"
 echo "baseline $(wc -l <"$BASE" | tr -d ' ') user packages; notifications on new installs"
