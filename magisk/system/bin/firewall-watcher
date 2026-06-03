@@ -2,8 +2,9 @@
 # firewall-watcher: applies POLICY_REJECT_ALL to newly installed user apps.
 #
 # Event-driven via inotifyd on /data/system/. When packages.xml or
-# packages.list changes, reconcile pm list packages -3 against a snapshot
-# and apply +REJECT_ALL to anything new (minus the allowlist). A safety-net
+# packages.list changes, diff vs persisted install baseline (known.txt — not
+# policy). allowlist.txt is manual-only (never written by the module). Notify
+# first; firewallctl runs on an async block queue. A safety-net
 # poll is a rare fallback only (no install-time polling).
 #
 # Modes:
@@ -29,6 +30,7 @@ ALLOW_QUEUE_LOCAL="/data/local/tmp/firewall_default_deny_allow"
 ALLOW_FIFO="/data/local/tmp/firewall_default_deny_allow.fifo"
 ALLOW_DONE="/data/local/tmp/firewall_default_deny_done"
 touch "$ALLOWLIST"
+touch "$STATE_DIR/block_queue" 2>/dev/null || true
 touch "$ALLOW_QUEUE" "$ALLOW_QUEUE_LOCAL" 2>/dev/null || true
 chmod 0666 "$ALLOW_QUEUE" "$ALLOW_QUEUE_LOCAL" 2>/dev/null || true
 rm -f "$ALLOW_FIFO" 2>/dev/null || true
@@ -54,11 +56,6 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
 }
 
-notify_app_allowlist() {
-    _base=$(notify_apk_data_dir 2>/dev/null) || return 1
-    echo "$_base/files/allowlist.txt"
-}
-
 # allowlist.txt = manual admin exemptions only (see customize.sh).
 # "Allow network" in the notification does NOT add to allowlist.txt.
 is_allowlisted() {
@@ -66,14 +63,6 @@ is_allowlisted() {
     grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$_pkg"
 }
 
-remove_from_module_allowlist() {
-    _pkg="$1"
-    [ -n "$_pkg" ] || return 0
-    [ ! -f "$ALLOWLIST" ] && return 0
-    _t="$STATE_DIR/.allowlist_tmp"
-    grep -vxF "$_pkg" "$ALLOWLIST" 2>/dev/null >"$_t" || : >"$_t"
-    mv "$_t" "$ALLOWLIST"
-}
 
 # Reinstall must block even if allowlist.txt still has a stale entry (e.g. old "Allow" button).
 should_force_block() {
@@ -119,14 +108,6 @@ was_notified_recently() {
     [ $((_now - _mt)) -lt 120 ]
 }
 
-remove_from_notify_allowlist() {
-    _pkg="$1"
-    _list=$(notify_app_allowlist 2>/dev/null) || return 0
-    [ -f "$_list" ] || return 0
-    _t="$STATE_DIR/.notify_allow_tmp"
-    grep -vxF "$_pkg" "$_list" 2>/dev/null >"$_t" || : >"$_t"
-    mv "$_t" "$_list"
-}
 
 snapshot_pkg_names() {
     sed 's/ .*//' "$SNAPSHOT" 2>/dev/null | sort -u
@@ -143,6 +124,25 @@ count_new_package_names() {
     wc -l <"$_newf" | tr -d ' '
     rm -f "$_curf" "$_snapf" "$_newf"
 }
+count_package_lines() {
+    _list="$1"
+    _n=$(printf '%s\n' "$_list" | grep -cE '^[^[:space:]]' 2>/dev/null) || _n=0
+    printf '%s' "$_n"
+}
+
+package_list_trusted() {
+    _list="$1"
+    _n=$(count_package_lines "$_list")
+    [ "$_n" -ge "$MIN_USER_PACKAGES" ]
+}
+
+package_list_suspicious_drop() {
+    _list="$1"
+    _cur=$(count_package_lines "$_list")
+    _prev=$(snapshot_pkg_names 2>/dev/null | grep -cE '^[^[:space:]]' 2>/dev/null) || _prev=0
+    [ "$_prev" -ge "$MIN_USER_PACKAGES" ] && [ "$_cur" -lt "$MIN_USER_PACKAGES" ]
+}
+
 PACKAGES_LIST="${FIREWALL_PACKAGES_LIST:-/data/system/packages.list}"
 
 current_packages() {
@@ -186,7 +186,6 @@ snapshot_uid_for_pkg() {
 note_uninstalled_pkg() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
-    remove_from_module_allowlist "$_pkg"
     grep -qxF "$_pkg" "$RECENT_UNINSTALL" 2>/dev/null && return 0
     printf '%s\n' "$_pkg" >>"$RECENT_UNINSTALL"
 }
@@ -271,21 +270,29 @@ prune_uninstalled_from_snapshot() {
 
 # Record every currently installed user app; never block during bootstrap.
 bootstrap_snapshot() {
+    _cur=$(current_packages) || _cur=""
+    if ! package_list_trusted "$_cur"; then
+        _n=$(count_package_lines "$_cur")
+        log "SAFETY: bootstrap skipped (only $_n user packages; need >= $MIN_USER_PACKAGES)"
+        return 1
+    fi
     _tmp="$SNAPSHOT.tmp.$$"
     : >"$_tmp"
-    current_packages | while IFS= read -r _pkg; do
+    printf '%s\n' "$_cur" | while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         _line=$(snapshot_line_for "$_pkg")
         printf '%s\n' "$_line" >>"$_tmp"
     done
     mv "$_tmp" "$SNAPSHOT"
     touch "$INIT_FLAG"
-    log "bootstrap snapshot: $(wc -l < "$SNAPSHOT") packages (existing apps not blocked)"
+    log "bootstrap baseline: $(wc -l < "$SNAPSHOT") packages recorded (no blocking)"
 }
 
 # If the snapshot is missing/empty or a reconcile would block too many apps at once,
 # rebuild known.txt without touching network policy (prevents mass-block accidents).
 MASS_BLOCK_LIMIT="${FIREWALL_MASS_BLOCK_LIMIT:-10}"
+MIN_USER_PACKAGES="${FIREWALL_MIN_USER_PACKAGES:-5}"
+BLOCK_QUEUE="$STATE_DIR/block_queue"
 
 needs_bootstrap() {
     [ ! -f "$INIT_FLAG" ]
@@ -646,10 +653,33 @@ write_allow_marker() {
     return 0
 }
 
+is_block_queued() {
+    _pkg="$1"
+    [ -n "$_pkg" ] && [ -f "$BLOCK_QUEUE" ] && grep -qxF "$_pkg" "$BLOCK_QUEUE" 2>/dev/null
+}
+
+enqueue_allow_request() {
+    _pkg="$1"
+    _marker="${2:-}"
+    [ -n "$_pkg" ] || return 1
+    if [ -n "$_marker" ]; then
+        printf '%s\t%s\n' "$_pkg" "$_marker" >>"$ALLOW_QUEUE_LOCAL"
+        printf '%s\t%s\n' "$_pkg" "$_marker" >>"$ALLOW_QUEUE"
+    else
+        printf '%s\n' "$_pkg" >>"$ALLOW_QUEUE_LOCAL"
+        printf '%s\n' "$_pkg" >>"$ALLOW_QUEUE"
+    fi
+}
+
 allow_one_package() {
     _pkg="$1"
     _marker="${2:-}"
     [ -n "$_pkg" ] || return 1
+    if is_block_queued "$_pkg"; then
+        enqueue_allow_request "$_pkg" "$_marker"
+        log "allow: queued $_pkg (block in progress)"
+        return 0
+    fi
     if [ ! -x /system/bin/firewall-allow-app ]; then
         log "allow: missing /system/bin/firewall-allow-app"
         return 1
@@ -715,6 +745,54 @@ start_allow_fifo_reader() {
 }
 
 
+enqueue_block_packages() {
+    _list="$1"
+    [ -s "$_list" ] || return 0
+    while IFS= read -r _pkg || [ -n "$_pkg" ]; do
+        [ -n "$_pkg" ] || continue
+        should_skip_blocking "$_pkg" && continue
+        grep -qxF "$_pkg" "$BLOCK_QUEUE" 2>/dev/null && continue
+        printf '%s\n' "$_pkg" >>"$BLOCK_QUEUE"
+    done <"$_list"
+}
+
+run_block_queue_pass() {
+    _failfile="$STATE_DIR/.block_queue_failed"
+    while [ -s "$BLOCK_QUEUE" ]; do
+        _pkg=$(head -1 "$BLOCK_QUEUE" 2>/dev/null)
+        [ -n "$_pkg" ] || break
+        _rest="$STATE_DIR/.block_queue_rest"
+        tail -n +2 "$BLOCK_QUEUE" 2>/dev/null >"$_rest" || : >"$_rest"
+        mv "$_rest" "$BLOCK_QUEUE"
+        if apply_block_policy "$_pkg"; then
+            record_snapshot_pkg "$_pkg"
+        else
+            printf '%s\n' "$_pkg" >>"$_failfile"
+        fi
+        process_allow_queue
+    done
+    if [ -s "$_failfile" ]; then
+        log "block queue: failed: $(tr '\n' ' ' <"$_failfile")"
+        rm -f "$_failfile"
+    fi
+}
+
+start_block_worker() {
+    (
+        while true; do
+            if [ -s "$BLOCK_QUEUE" ]; then
+                if mkdir "$STATE_DIR/block_worker.lock" 2>/dev/null; then
+                    run_block_queue_pass
+                    rmdir "$STATE_DIR/block_worker.lock" 2>/dev/null
+                fi
+            fi
+            sleep 0.25
+        done
+    ) &
+    BLOCK_WORKER_PID=$!
+}
+
+
 notify_block_candidates() {
     _list="$1"
     [ -s "$_list" ] || return 0
@@ -737,9 +815,6 @@ apply_block_policy() {
         clear_uninstalled_pkg "$pkg"
         record_snapshot_pkg "$pkg"
         return 0
-    fi
-    if is_allowlisted "$pkg"; then
-        remove_from_module_allowlist "$pkg"
     fi
     if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
@@ -766,7 +841,8 @@ reconcile_install_event() {
     [ -f "$INIT_FLAG" ] || return 0
     [ ! -s "$SNAPSHOT" ] && return 0
     _current=$(current_packages) || return 0
-    [ -z "$_current" ] && return 0
+    package_list_trusted "$_current" || return 0
+    package_list_suspicious_drop "$_current" && return 0
     _nf="$STATE_DIR/.reconcile_install_event"
     collect_block_candidates "$_current" "$_nf"
     [ -s "$_nf" ] || return 0
@@ -803,13 +879,28 @@ reconcile() {
         fi
         return 0
     fi
-    if ! current=$(current_packages) || [ -z "$current" ]; then
-        log "WARN: pm list packages -3 empty or failed; skipping reconcile"
+    if ! current=$(current_packages); then
+        log "WARN: pm list packages -3 failed; skipping reconcile"
+        rmdir "$LOCK" 2>/dev/null
+        return 0
+    fi
+    if ! package_list_trusted "$current"; then
+        _n=$(count_package_lines "$current")
+        log "SAFETY: untrusted package list ($_n apps < $MIN_USER_PACKAGES); skipping reconcile"
+        rmdir "$LOCK" 2>/dev/null
+        return 0
+    fi
+    if package_list_suspicious_drop "$current"; then
+        log "SAFETY: suspicious package drop vs baseline; skipping reconcile"
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
     if needs_bootstrap; then
-        bootstrap_snapshot
+        if bootstrap_snapshot; then
+            :
+        else
+            log "SAFETY: bootstrap deferred (package list not ready)"
+        fi
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
@@ -834,35 +925,15 @@ reconcile() {
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
-    log "reconcile: $_nnew package(s) to block"
+    log "reconcile: $_nnew package(s) to block (notify now, block async)"
     notify_block_candidates "$_newfile"
     prune_uninstalled_from_snapshot "$current"
-    failfile="$STATE_DIR/.reconcile_failed"
-    : > "$failfile"
-    _donefile="$STATE_DIR/.reconcile_done"
-    : > "$_donefile"
-    while IFS= read -r pkg || [ -n "$pkg" ]; do
-        [ -n "$pkg" ] || continue
-        if apply_block_policy "$pkg"; then
-            printf '%s
-' "$pkg" >> "$_donefile"
-        else
-            echo "$pkg" >> "$failfile"
-        fi
-    done < "$_newfile"
+    enqueue_block_packages "$_newfile"
     rm -f "$_newfile"
-    while IFS= read -r _pkg || [ -n "$_pkg" ]; do
-        [ -n "$_pkg" ] || continue
-        record_snapshot_pkg "$_pkg"
-    done < "$_donefile"
-    rm -f "$_donefile"
-    if [ -s "$failfile" ]; then
-        log "reconcile: will retry failed: $(tr '
-' ' ' < "$failfile")"
-    fi
-    rm -f "$failfile"
     rmdir "$LOCK" 2>/dev/null
-    process_allow_queue
+    if [ -s "$BLOCK_QUEUE" ] && [ -z "${BLOCK_WORKER_PID:-}" ]; then
+        run_block_queue_pass
+    fi
 }
 
 is_allow_queue_event() {
@@ -927,6 +998,7 @@ rmdir "$LOCK" 2>/dev/null
 cleanup() {
     [ -n "$ALLOW_QUEUE_PID" ] && kill "$ALLOW_QUEUE_PID" 2>/dev/null
     [ -n "$ALLOW_FIFO_PID" ] && kill "$ALLOW_FIFO_PID" 2>/dev/null
+    [ -n "$BLOCK_WORKER_PID" ] && kill "$BLOCK_WORKER_PID" 2>/dev/null
     [ -n "$INOTIFY_SUP_PID" ] && kill "$INOTIFY_SUP_PID" 2>/dev/null
     rmdir "$LOCK" 2>/dev/null
     rmdir "$STATE_DIR/allow_queue.lock" 2>/dev/null
@@ -935,7 +1007,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v32"
+log "firewall-watcher build=notify-apk-v33"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
@@ -943,6 +1015,7 @@ else
     log "watcher starting (inotifyd MISSING, safety poll ${SAFETY_INTERVAL}s only)"
 fi
 
+start_block_worker
 reconcile
 process_allow_queue
 start_allow_queue_poller

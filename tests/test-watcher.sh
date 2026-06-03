@@ -53,6 +53,7 @@ export FIREWALL_TEST_CMD_LOG="$TMP/cmd.log"
 export FIREWALL_TEST_AM_LOG="$TMP/am.log"
 export PATH="$STUBS:$PATH"
 export FIREWALLCTL="$STUBS/firewallctl"
+export FIREWALL_MIN_USER_PACKAGES=2
 
 fail=0
 assert() {
@@ -171,15 +172,23 @@ assert "T5: race pkg blocked once uid exists" \
 reset_state
 write_pm <<EOF
 package:com.reinstall.app
+package:com.helper.app
 EOF
 write_uids <<EOF
 com.reinstall.app 10301
+com.helper.app 10302
 EOF
 run_watcher --reconcile
 echo "com.reinstall.app 10301" > "$STATE/known.txt"
+echo "com.helper.app 10302" >> "$STATE/known.txt"
 echo "com.reinstall.app" >> "$STATE/recent_uninstalled"
+write_pm <<EOF
+package:com.reinstall.app
+package:com.helper.app
+EOF
 write_uids <<EOF
 com.reinstall.app 10399
+com.helper.app 10302
 EOF
 rm -f "$TMP/firewallctl.log"
 run_watcher --reconcile
@@ -190,9 +199,11 @@ assert "T6: reinstall blocked after uid change" \
 reset_state
 write_pm <<EOF
 package:com.stable.app
+package:com.helper.app
 EOF
 write_uids <<EOF
 com.stable.app 10401
+com.helper.app 10402
 EOF
 run_watcher --reconcile
 rm -f "$TMP/firewallctl.log"
@@ -204,16 +215,24 @@ assert "T7: stable app not blocked twice" \
 reset_state
 write_pm <<EOF
 package:com.reinstall.allow
+package:com.helper.app
 EOF
 write_uids <<EOF
 com.reinstall.allow 10501
+com.helper.app 10502
 EOF
 run_watcher --reconcile
 echo "com.reinstall.allow" > "$STATE/allowlist.txt"
 echo "com.reinstall.allow 10501" > "$STATE/known.txt"
+echo "com.helper.app 10502" >> "$STATE/known.txt"
 echo "com.reinstall.allow" >> "$STATE/recent_uninstalled"
+write_pm <<EOF
+package:com.reinstall.allow
+package:com.helper.app
+EOF
 write_uids <<EOF
 com.reinstall.allow 10599
+com.helper.app 10502
 EOF
 rm -f "$TMP/firewallctl.log"
 run_watcher --reconcile
@@ -224,16 +243,24 @@ assert "T8: allowlist ignored on reinstall" \
 reset_state
 write_pm <<EOF
 package:com.reinstall.allowlisted
+package:com.helper.app
 EOF
 write_uids <<EOF
 com.reinstall.allowlisted 10701
+com.helper.app 10702
 EOF
 run_watcher --reconcile
 echo "com.reinstall.allowlisted" > "$STATE/allowlist.txt"
 echo "com.reinstall.allowlisted 10701" > "$STATE/known.txt"
+echo "com.helper.app 10702" >> "$STATE/known.txt"
 echo "com.reinstall.allowlisted" >> "$STATE/recent_uninstalled"
+write_pm <<EOF
+package:com.reinstall.allowlisted
+package:com.helper.app
+EOF
 write_uids <<EOF
 com.reinstall.allowlisted 10799
+com.helper.app 10702
 EOF
 rm -f "$TMP/firewallctl.log"
 run_watcher --reconcile
@@ -241,5 +268,39 @@ assert "T9: allowlist.txt does not exempt reinstall" \
     "grep -qF 'set com.reinstall.allowlisted +REJECT_ALL' '$TMP/firewallctl.log'"
 assert "T9: not skip allowlisted on reinstall" \
     "! grep -qF 'skip com.reinstall.allowlisted (allowlisted)' '$STATE/watcher.log'"
+
+# ---- T10: empty pm list must not bootstrap or mass-block ----
+reset_state
+write_pm <<EOF
+EOF
+write_uids <<EOF
+EOF
+run_watcher --reconcile
+assert "T10: empty list does not init snapshot" "[ ! -f '$STATE/.snapshot_initialized' ]"
+assert "T10: empty list does not block" "[ ! -f '$TMP/firewallctl.log' ]"
+
+# ---- T11: suspicious drop must not block ----
+reset_state
+write_pm <<EOF
+package:com.example.existing.a
+package:com.example.existing.b
+package:com.example.existing.c
+EOF
+write_uids <<EOF
+com.example.existing.a 10101
+com.example.existing.b 10102
+com.example.existing.c 10103
+EOF
+run_watcher --reconcile
+write_pm <<EOF
+package:com.example.existing.a
+EOF
+write_uids <<EOF
+com.example.existing.a 10101
+EOF
+rm -f "$TMP/firewallctl.log"
+run_watcher --reconcile
+assert "T11: suspicious drop does not block" "[ ! -f '$TMP/firewallctl.log' ]"
+
 
 exit "$fail"
