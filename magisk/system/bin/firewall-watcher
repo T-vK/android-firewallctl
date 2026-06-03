@@ -174,19 +174,6 @@ run_firewallctl() {
     fi
 }
 
-package_visible() {
-    "$PM" list packages "$1" 2>/dev/null | grep -qxF "package:$1"
-}
-
-wait_for_package() {
-    pkg="$1"
-    if package_visible "$pkg"; then
-        return 0
-    fi
-    log "defer $pkg (not visible to pm yet; will retry on next package DB event)"
-    return 1
-}
-
 NOTIFY_APK_COMPONENT="app.firewall.notify"
 NOTIFY_RUNNER=app.firewall.notify.NotifyRunner
 ALLOW_COMPLETE_RUNNER=app.firewall.notify.AllowCompleteRunner
@@ -504,11 +491,11 @@ apply_deny() {
     pkg="$1"
     if is_allowlisted "$pkg"; then
         log "skip $pkg (allowlisted)"
+        record_snapshot_pkg "$pkg"
         return 0
     fi
-    if ! wait_for_package "$pkg"; then
-        return 1
-    fi
+    # Package was just listed by pm list packages -3; do not re-check with a
+    # stricter pm filter (breaks on LineageOS for valid third-party installs).
     if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
         notify_user "$pkg"
@@ -545,8 +532,7 @@ reconcile() {
         return 0
     fi
     if [ ! -f "$SNAPSHOT" ]; then
-        printf '%s
-' "$current" | while IFS= read -r _pkg; do
+        printf '%s\n' "$current" | while IFS= read -r _pkg; do
             [ -n "$_pkg" ] && record_snapshot_pkg "$_pkg"
         done
         log "initial snapshot: $(wc -l < "$SNAPSHOT") user packages"
@@ -556,8 +542,7 @@ reconcile() {
     prune_uninstalled_from_snapshot
     _newfile="$STATE_DIR/.reconcile_new"
     : > "$_newfile"
-    printf '%s
-' "$current" | while IFS= read -r _pkg; do
+    printf '%s\n' "$current" | while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         if should_block_pkg "$_pkg"; then
             printf '%s
@@ -568,24 +553,24 @@ reconcile() {
         log "reconcile: $(wc -l < "$_newfile") package(s) to block"
         failfile="$STATE_DIR/.reconcile_failed"
         : > "$failfile"
+        _donefile="$STATE_DIR/.reconcile_done"
+        : > "$_donefile"
         while IFS= read -r pkg || [ -n "$pkg" ]; do
             [ -n "$pkg" ] || continue
-            if ! apply_deny "$pkg"; then
+            if apply_deny "$pkg"; then
+                printf '%s\n' "$pkg" >> "$_donefile"
+            else
                 echo "$pkg" >> "$failfile"
             fi
         done < "$_newfile"
         rm -f "$_newfile"
-        _okfile="$STATE_DIR/.reconcile_ok"
-        printf '%s\n' "$current" > "$_okfile"
         while IFS= read -r _pkg || [ -n "$_pkg" ]; do
             [ -n "$_pkg" ] || continue
-            grep -qxF "$_pkg" "$failfile" 2>/dev/null && continue
             record_snapshot_pkg "$_pkg"
-        done <"$_okfile"
-        rm -f "$_okfile"
+        done < "$_donefile"
+        rm -f "$_donefile"
         if [ -s "$failfile" ]; then
-            log "reconcile: will retry failed: $(tr '
-' ' ' < "$failfile")"
+            log "reconcile: will retry failed: $(tr '\n' ' ' < "$failfile")"
         fi
         rm -f "$failfile"
     fi
@@ -662,7 +647,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v22"
+log "firewall-watcher build=notify-apk-v23"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
