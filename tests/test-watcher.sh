@@ -272,4 +272,9 @@ rm -f "$TMP/firewallctl.log"
 wake_watcher
 assert "T11: suspicious drop no block" "[ ! -f '$TMP/firewallctl.log' ]"
 
+# ---- T12: inotifyd must not treat --wake as a watch path ----
+assert "T12: inotifyd invocation has no --wake watch path" \
+    "! grep -q 'inotifyd \"\$0\" --wake' \"\$WATCHER\""
+
+
 exit "$fail"
