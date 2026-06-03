@@ -13,6 +13,7 @@
 
 STATE_DIR="${FIREWALL_STATE_DIR:-/data/adb/firewall_default_deny}"
 SNAPSHOT="$STATE_DIR/known.txt"
+INIT_FLAG="$STATE_DIR/.snapshot_initialized"
 RECENT_UNINSTALL="$STATE_DIR/recent_uninstalled"
 ALLOWLIST="$STATE_DIR/allowlist.txt"
 LOGFILE="$STATE_DIR/watcher.log"
@@ -112,12 +113,6 @@ snapshot_uid_for_pkg() {
     grep -m1 "^${_pkg} " "$SNAPSHOT" 2>/dev/null | awk '{print $2}'
 }
 
-pkg_has_reject_all() {
-    _pkg="$1"
-    _out=$(run_firewallctl get "$_pkg" 2>/dev/null) || return 1
-    echo "$_out" | grep -q 'POLICY_REJECT_ALL'
-}
-
 note_uninstalled_pkg() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
@@ -139,7 +134,7 @@ was_recently_uninstalled() {
     grep -qxF "$_pkg" "$RECENT_UNINSTALL" 2>/dev/null
 }
 
-# Block: new name, reinstall, or snapshot entry without active REJECT_ALL.
+# Block: package name not in snapshot, recent uninstall, or UID change (reinstall).
 should_block_pkg() {
     _pkg="$1"
     if was_recently_uninstalled "$_pkg"; then
@@ -153,19 +148,10 @@ should_block_pkg() {
     if [ -n "$_newuid" ] && [ -n "$_olduid" ] && [ "$_newuid" != "$_olduid" ]; then
         return 0
     fi
-    if [ -n "$_newuid" ] && [ -z "$_olduid" ] && grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null; then
+    if [ -n "$_newuid" ] && grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null; then
         return 0
     fi
-    if [ -z "$_newuid" ]; then
-        return 1
-    fi
-    if [ -z "$_olduid" ]; then
-        return 0
-    fi
-    if pkg_has_reject_all "$_pkg"; then
-        return 1
-    fi
-    return 0
+    return 1
 }
 
 record_snapshot_pkg() {
@@ -214,9 +200,17 @@ bootstrap_snapshot() {
     current_packages | while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         _line=$(snapshot_line_for "$_pkg")
-        printf '%s\n' "$_line" >>"$_tmp"
+        case "$_line" in
+            *" "*)
+                printf '%s\n' "$_line" >>"$_tmp"
+                ;;
+            *)
+                log "bootstrap: defer $_pkg (no uid yet; will block on next reconcile)"
+                ;;
+        esac
     done
     mv "$_tmp" "$SNAPSHOT"
+    touch "$INIT_FLAG"
     log "bootstrap snapshot: $(wc -l < "$SNAPSHOT") packages (existing apps not blocked)"
 }
 
@@ -225,7 +219,7 @@ bootstrap_snapshot() {
 MASS_BLOCK_LIMIT="${FIREWALL_MASS_BLOCK_LIMIT:-10}"
 
 needs_bootstrap() {
-    [ ! -s "$SNAPSHOT" ]
+    [ ! -f "$INIT_FLAG" ]
 }
 
 mass_block_detected() {
@@ -589,7 +583,7 @@ reconcile_stale_lock() {
     _now=$(date +%s 2>/dev/null) || return 0
     _mtime=$(stat -c %Y "$LOCK" 2>/dev/null) || return 0
     _age=$((_now - _mtime))
-    if [ "$_age" -gt 120 ]; then
+    if [ "$_age" -gt 45 ]; then
         log "reconcile: clearing stale lock (${_age}s)"
         rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null
     fi
@@ -607,6 +601,12 @@ reconcile() {
         return 0
     fi
     if needs_bootstrap; then
+        bootstrap_snapshot
+        rmdir "$LOCK" 2>/dev/null
+        return 0
+    fi
+    if [ ! -s "$SNAPSHOT" ]; then
+        log "WARN: snapshot empty; rebuilding without blocking"
         bootstrap_snapshot
         rmdir "$LOCK" 2>/dev/null
         return 0
@@ -726,7 +726,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v25"
+log "firewall-watcher build=notify-apk-v26"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
