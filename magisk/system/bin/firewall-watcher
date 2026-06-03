@@ -235,8 +235,17 @@ run_firewallctl() {
 # --- notifications (broadcast first; see notify-apk-v33+) ---
 
 notify_apk_uid() {
-    "$PM" list packages -U "$NOTIFY_APK_COMPONENT" 2>/dev/null \
-        | sed -n 's/.*uid:\([0-9]*\).*/\1/p' | head -1
+    _uid=$("$PM" list packages -U "$NOTIFY_APK_COMPONENT" 2>/dev/null \
+        | sed -n 's/.*uid:\([0-9]*\).*/\1/p' | head -1)
+    [ -n "$_uid" ] && printf '%s' "$_uid" && return 0
+    if [ -r "$PACKAGES_LIST" ]; then
+        _uid=$(awk '$1 == "'"$NOTIFY_APK_COMPONENT"'" { print $2; exit }' "$PACKAGES_LIST" 2>/dev/null)
+        [ -n "$_uid" ] && printf '%s' "$_uid" && return 0
+    fi
+    _uid=$(dumpsys package "$NOTIFY_APK_COMPONENT" 2>/dev/null \
+        | sed -n 's/^[[:space:]]*userId=//p' | head -1)
+    [ -n "$_uid" ] && printf '%s' "$_uid" && return 0
+    return 1
 }
 
 run_as_notify_apk() {
@@ -259,50 +268,88 @@ notify_module_apk() {
 notify_apk_path() {
     _p=$("$PM" path "$NOTIFY_APK_COMPONENT" 2>/dev/null | head -1 | sed 's/^package://')
     [ -n "$_p" ] && [ -f "$_p" ] && echo "$_p" && return 0
+    if [ -f /system/priv-app/FirewallNotify/FirewallNotify.apk ]; then
+        echo /system/priv-app/FirewallNotify/FirewallNotify.apk
+        return 0
+    fi
     notify_module_apk
 }
 
-install_notify_apk() {
+notify_apk_on_disk() {
+    notify_apk_path >/dev/null 2>&1
+}
+
+notify_grant_permissions() {
+    "$PM" grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS \
+        >>"$LOGFILE" 2>&1 || true
+    if [ -x "$CMD" ]; then
+        "$CMD" appops set "$NOTIFY_APK_COMPONENT" POST_NOTIFICATION allow \
+            >>"$LOGFILE" 2>&1 || true
+    fi
+}
+
+install_notify_apk_if_missing() {
+    notify_apk_on_disk && return 0
     _apk=$(notify_module_apk) || {
         log "notify: FirewallNotify.apk not found under module dir"
         return 1
     }
+    log "notify: no APK on device; attempting pm install (module update / missing priv-app)"
     cp "$_apk" /data/local/tmp/FirewallNotify-install.apk 2>>"$LOGFILE" || return 1
     chmod 644 /data/local/tmp/FirewallNotify-install.apk 2>/dev/null || true
-    if pm install -r -g -d --user 0 /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
-        log "notify: installed FirewallNotify via pm (fallback)"
+    if "$PM" install -r -g -d --user 0 /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+        log "notify: installed FirewallNotify via pm"
         return 0
     fi
-    if cmd package install -r -g --user 0 -t /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
-        log "notify: installed FirewallNotify via cmd package install (fallback)"
+    if [ -x "$CMD" ] && "$CMD" package install -r -g --user 0 -t \
+            /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+        log "notify: installed FirewallNotify via cmd package install"
         return 0
     fi
-    log "notify: pm/cmd install FirewallNotify failed (see log)"
+    log "notify: pm/cmd install failed (PackageManager busy?); will still try notify paths"
     return 1
 }
 
 ensure_notify_ready() {
-    if pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
-        pm grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS >>"$LOGFILE" 2>&1 || true
+    # Best-effort only — never gate posting on pm path (PM often busy during installs).
+    if notify_apk_on_disk; then
+        notify_grant_permissions
         return 0
     fi
-    log "notify: $NOTIFY_APK_COMPONENT not installed; trying module APK fallback"
-    install_notify_apk || return 1
-    if pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
-        pm grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS >>"$LOGFILE" 2>&1 || true
-        return 0
+    install_notify_apk_if_missing || true
+    notify_grant_permissions
+    notify_apk_on_disk
+}
+
+notify_shell_cmd() {
+    _pkg="$1"
+    _tag="firewall_default_deny_${_pkg}"
+    _title="Internet blocked for new app"
+    _body="${_pkg} was installed and network access was disabled by default."
+    if [ -x "$CMD" ]; then
+        if [ "$(id -u 2>/dev/null)" = "0" ]; then
+            "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body" \
+                >>"$LOGFILE" 2>&1 && return 0
+        fi
+        if [ -x /system/bin/su ]; then
+            /system/bin/su 2000 "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body" \
+                >>"$LOGFILE" 2>&1 && return 0
+        fi
+        "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body" \
+            >>"$LOGFILE" 2>&1 && return 0
     fi
-    log "notify: $NOTIFY_APK_COMPONENT still not visible after install attempt"
     return 1
 }
 
 notify_via_activity() {
     _pkg="$1"
     _comp="${NOTIFY_APK_COMPONENT}/.PostNotificationActivity"
-    if run_as_notify_apk "$AM" start --user 0 -f 0x10000000             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+    if run_as_notify_apk "$AM" start --user 0 -f 0x10000000 \
+            -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
         return 0
     fi
-    if "$AM" start --user 0 -f 0x10000000             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+    if "$AM" start --user 0 -f 0x10000000 \
+            -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
         return 0
     fi
     return 1
@@ -311,10 +358,12 @@ notify_via_activity() {
 notify_via_service() {
     _pkg="$1"
     _comp="${NOTIFY_APK_COMPONENT}/.NotifyService"
-    if run_as_notify_apk "$AM" startservice --user 0             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+    if run_as_notify_apk "$AM" startservice --user 0 \
+            -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
         return 0
     fi
-    if "$AM" startservice --user 0             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+    if "$AM" startservice --user 0 \
+            -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
         return 0
     fi
     return 1
@@ -344,18 +393,6 @@ notify_via_broadcast() {
     return 1
 }
 
-notify_via_am_direct() {
-    _pkg="$1"
-    if run_as_notify_apk "$AM" start --user 0 -f 0x10000000 \
-            -n "${NOTIFY_APK_COMPONENT}/.PostNotificationActivity" \
-            --es package "$_pkg" >>"$LOGFILE" 2>&1; then
-        return 0
-    fi
-    "$AM" start --user 0 -f 0x10000000 \
-        -n "${NOTIFY_APK_COMPONENT}/.PostNotificationActivity" \
-        --es package "$_pkg" >/dev/null 2>>"$LOGFILE"
-}
-
 run_notify_apk_runner() {
     _runner="$1"
     shift
@@ -370,8 +407,7 @@ run_notify_apk_runner() {
         done
         /system/bin/su "$_uid" /system/bin/sh -c \
             "CLASSPATH='$_apk' exec '$APP_PROCESS' /system/bin --nice-name=firewall-notify '$_runner'$_args" \
-            >>"$LOGFILE" 2>&1
-        return $?
+            >>"$LOGFILE" 2>&1 && return 0
     fi
     CLASSPATH="$_apk" "$APP_PROCESS" /system/bin --nice-name=firewall-notify \
         "$_runner" "$@" >>"$LOGFILE" 2>&1
@@ -379,17 +415,29 @@ run_notify_apk_runner() {
 
 notify_user_inner() {
     _pkg="$1"
-    ensure_notify_ready || return 1
+    [ -n "$_pkg" ] || return 1
+    ensure_notify_ready
+
+    # NotifyRunner first: no am/cmd IPC; works when PackageManager is in a failed transaction.
+    if run_notify_apk_runner "$NOTIFY_RUNNER" "$_pkg"; then
+        log "notify: path=app_process pkg=$_pkg"
+        return 0
+    fi
+    # cmd notification: shell UID, no FirewallNotify context required.
+    if notify_shell_cmd "$_pkg"; then
+        log "notify: path=cmd pkg=$_pkg"
+        return 0
+    fi
     if notify_via_activity "$_pkg"; then
+        log "notify: path=activity pkg=$_pkg"
         return 0
     fi
     if notify_via_service "$_pkg"; then
+        log "notify: path=service pkg=$_pkg"
         return 0
     fi
     if notify_via_broadcast "$_pkg"; then
-        return 0
-    fi
-    if run_notify_apk_runner "$NOTIFY_RUNNER" "$_pkg"; then
+        log "notify: path=broadcast pkg=$_pkg"
         return 0
     fi
     return 1
@@ -398,10 +446,13 @@ notify_user_inner() {
 notify_user() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
+    if [ -n "${FIREWALL_NOTIFY_CMD:-}" ]; then
+        "$FIREWALL_NOTIFY_CMD" "$_pkg" >>"$LOGFILE" 2>&1 && return 0
+    fi
     if notify_user_inner "$_pkg"; then
         log "notify: posted for $_pkg"
     else
-        log "ERROR: notify failed for $_pkg"
+        log "ERROR: notify failed for $_pkg (all paths; see log above)"
     fi
 }
 
@@ -717,6 +768,18 @@ case "$1" in
         allow_one_package "$_pkg" ""
         exit $?
         ;;
+    --test-notify)
+        _pkg="$2"
+        [ -z "$_pkg" ] && echo "usage: firewall-watcher --test-notify <package>" >&2 && exit 2
+        mkdir -p "$STATE_DIR"
+        log "test-notify: firing all paths for $_pkg"
+        if notify_user_inner "$_pkg"; then
+            echo "OK: notification path succeeded (see $LOGFILE)"
+            exit 0
+        fi
+        echo "FAIL: all notification paths failed (see $LOGFILE)" >&2
+        exit 1
+        ;;
     --reconcile)
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
             wake_daemon
@@ -763,7 +826,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v36"
+log "firewall-watcher build=memdiff-v37"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker

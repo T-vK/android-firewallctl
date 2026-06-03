@@ -43,7 +43,13 @@ cat > "$STUBS/am" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "${FIREWALL_TEST_AM_LOG:-/dev/null}"
 EOF
-chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/cmd "$STUBS"/am
+
+cat > "$STUBS/app_process" <<'EOF'
+#!/usr/bin/env bash
+echo "app_process $*" >> "${FIREWALL_TEST_AM_LOG:-/dev/null}"
+exit 0
+EOF
+chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/cmd "$STUBS"/am "$STUBS"/app_process
 
 export FIREWALL_STATE_DIR="$STATE"
 export FIREWALL_PACKAGES_LIST="$PKG_LIST"
@@ -121,8 +127,8 @@ EOF
 wake_watcher
 assert "T2: firewallctl set on new pkg" \
     "grep -qF 'set com.example.new.app +REJECT_ALL' '$TMP/firewallctl.log'"
-assert "T2: notification broadcast" \
-    "grep -q 'com.example.new.app' '$TMP/am.log'"
+assert "T2: notification delivered" \
+    "grep -qE 'notify: (path=|posted for) com.example.new.app' '$STATE/watcher.log' || grep -q 'com.example.new.app' '$TMP/am.log'"
 
 # ---- T3: manual allowlist skip ----
 echo "com.example.exempt" >"$STATE/allowlist.txt"
