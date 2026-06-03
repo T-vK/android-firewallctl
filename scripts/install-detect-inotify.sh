@@ -27,8 +27,16 @@ notify_new_pkg() {
     [ -n "$_pkg" ] || return 1
     _when=$(date '+%H:%M:%S' 2>/dev/null || date)
 
-    # FirewallNotify channel (IMPORTANCE_HIGH) — visible unlike cmd shell_cmd.
+    # Prefer broadcast (runs in FirewallNotify process); am/app_process can fail on some ROMs.
     if pm path "$NOTIFY_PKG" >/dev/null 2>&1; then
+        if "$AM" broadcast --user 0 \
+                -a app.firewall.notify.SHOW_BLOCKED \
+                --es package "$_pkg" \
+                --es kind install_detect \
+                --es when "$_when" \
+                -p "$NOTIFY_PKG" >/dev/null 2>&1; then
+            return 0
+        fi
         if "$AM" start --user 0 \
                 -n "${NOTIFY_PKG}/.PostNotificationActivity" \
                 --es package "$_pkg" \

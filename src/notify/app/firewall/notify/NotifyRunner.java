@@ -26,6 +26,16 @@ public final class NotifyRunner {
             Looper.prepareMainLooper();
             grantNotificationPermission();
             Context ctx = getAppContext();
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) ctx.getSystemService(
+                            android.content.Context.NOTIFICATION_SERVICE);
+            if (nm != null && !nm.areNotificationsEnabled()) {
+                grantNotificationPermission();
+                if (!nm.areNotificationsEnabled()) {
+                    System.err.println("NotifyRunner: POST_NOTIFICATIONS not granted");
+                    System.exit(1);
+                }
+            }
             if (args.length >= 2 && NotifyHelper.KIND_INSTALL_DETECT.equals(args[1])) {
                 NotifyHelper.showInstallDetected(ctx, args[0], null);
                 System.out.println("NotifyRunner: install_detect posted for " + args[0]);

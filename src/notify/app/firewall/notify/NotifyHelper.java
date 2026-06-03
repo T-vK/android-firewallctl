@@ -69,6 +69,7 @@ public final class NotifyHelper {
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(
                         text + "\n\nPackage: " + pkg))
+                .setPriority(Notification.PRIORITY_MAX)
                 .setCategory(Notification.CATEGORY_ALARM)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOngoing(true)

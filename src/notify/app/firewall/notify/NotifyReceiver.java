@@ -21,6 +21,13 @@ public final class NotifyReceiver extends BroadcastReceiver {
         if (pkg == null || pkg.isEmpty()) {
             return;
         }
-        NotifyHelper.showBlocked(context.getApplicationContext(), pkg);
+        Context app = context.getApplicationContext();
+        String kind = intent.getStringExtra(NotifyHelper.EXTRA_KIND);
+        if (NotifyHelper.KIND_INSTALL_DETECT.equals(kind)) {
+            String when = intent.getStringExtra(NotifyHelper.EXTRA_WHEN);
+            NotifyHelper.showInstallDetected(app, pkg, when);
+        } else {
+            NotifyHelper.showBlocked(app, pkg);
+        }
     }
 }
