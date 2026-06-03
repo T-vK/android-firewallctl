@@ -142,6 +142,13 @@ package_uid() {
 }
 
 # One line per app: "pkg uid" or "pkg" if uid unknown.
+package_in_packages_list() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    [ -r "$PACKAGES_LIST" ] || return 1
+    awk -v p="$_pkg" '$1 == p { found=1; exit } END { exit !found }' "$PACKAGES_LIST" 2>/dev/null
+}
+
 current_package_lines() {
     _pkgs=$(current_packages) || return 1
     [ -n "$_pkgs" ] || return 1
@@ -255,13 +262,38 @@ notify_apk_path() {
     notify_module_apk
 }
 
-ensure_notify_ready() {
-    if ! pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
-        log "notify: $NOTIFY_APK_COMPONENT not installed (reboot after module update?)"
+install_notify_apk() {
+    _apk=$(notify_module_apk) || {
+        log "notify: FirewallNotify.apk not found under module dir"
         return 1
+    }
+    cp "$_apk" /data/local/tmp/FirewallNotify-install.apk 2>>"$LOGFILE" || return 1
+    chmod 644 /data/local/tmp/FirewallNotify-install.apk 2>/dev/null || true
+    if pm install -r -g -d --user 0 /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+        log "notify: installed FirewallNotify via pm (fallback)"
+        return 0
     fi
-    pm grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS >>"$LOGFILE" 2>&1         || true
-    return 0
+    if cmd package install -r -g --user 0 -t /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+        log "notify: installed FirewallNotify via cmd package install (fallback)"
+        return 0
+    fi
+    log "notify: pm/cmd install FirewallNotify failed (see log)"
+    return 1
+}
+
+ensure_notify_ready() {
+    if pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
+        pm grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS >>"$LOGFILE" 2>&1 || true
+        return 0
+    fi
+    log "notify: $NOTIFY_APK_COMPONENT not installed; trying module APK fallback"
+    install_notify_apk || return 1
+    if pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
+        pm grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS >>"$LOGFILE" 2>&1 || true
+        return 0
+    fi
+    log "notify: $NOTIFY_APK_COMPONENT still not visible after install attempt"
+    return 1
 }
 
 notify_via_activity() {
@@ -386,15 +418,37 @@ notify_block_list() {
 
 apply_block_policy() {
     _pkg="$1"
+    _max="${FIREWALL_BLOCK_RETRY_MAX:-20}"
+    _delay="${FIREWALL_BLOCK_RETRY_DELAY:-1}"
     if should_skip_blocking "$_pkg"; then
         log "skip $_pkg (allowlisted)"
         return 0
     fi
-    if run_firewallctl set "$_pkg" +REJECT_ALL >>"$LOGFILE" 2>&1; then
-        log "blocked $_pkg"
-        return 0
-    fi
-    log "ERROR: firewallctl set +REJECT_ALL failed for $_pkg"
+    _try=0
+    while [ "$_try" -lt "$_max" ]; do
+        if ! package_in_packages_list "$_pkg"; then
+            _try=$((_try + 1))
+            [ "$_try" -lt "$_max" ] && sleep "$_delay"
+            continue
+        fi
+        _err="$STATE_DIR/.block_err"
+        if run_firewallctl set "$_pkg" +REJECT_ALL >>"$LOGFILE" 2>"$_err"; then
+            rm -f "$_err" 2>/dev/null
+            log "blocked $_pkg"
+            return 0
+        fi
+        if grep -qF "package not found" "$_err" 2>/dev/null; then
+            cat "$_err" >>"$LOGFILE" 2>/dev/null || true
+            rm -f "$_err" 2>/dev/null
+            _try=$((_try + 1))
+            [ "$_try" -lt "$_max" ] && sleep "$_delay"
+            continue
+        fi
+        cat "$_err" >>"$LOGFILE" 2>/dev/null || true
+        rm -f "$_err" 2>/dev/null
+        break
+    done
+    log "ERROR: firewallctl set +REJECT_ALL failed for $_pkg (after $_try wait(s))"
     return 1
 }
 
@@ -709,7 +763,8 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v35"
+log "firewall-watcher build=memdiff-v36"
+ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker
 start_allow_queue_poller
@@ -724,7 +779,7 @@ if command -v inotifyd >/dev/null 2>&1; then
             [ -e "$ALLOW_QUEUE_LOCAL" ] && _targets="$_targets $ALLOW_QUEUE_LOCAL:w"
             [ -e "$ALLOW_QUEUE" ] && _targets="$_targets $ALLOW_QUEUE:w"
             # shellcheck disable=SC2086
-            inotifyd "$0" --wake $_targets 2>>"$LOGFILE"
+            inotifyd "$0" $_targets 2>>"$LOGFILE"
             log "inotifyd exited rc=$?, restarting in 5s"
             sleep 5
         done
