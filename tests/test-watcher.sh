@@ -146,7 +146,7 @@ run_watcher packages.list
 assert "T4: another blocked via packages.list event" \
     "grep -qF 'set com.example.another +REJECT_ALL' '$TMP/firewallctl.log'"
 
-# ---- T5: bootstrap defers pkg without uid (install race) ----
+# ---- T5: name-only bootstrap entry blocks when uid appears ----
 reset_state
 write_pm <<EOF
 package:com.race.installing
@@ -156,12 +156,13 @@ write_uids <<EOF
 com.example.existing.a 10101
 EOF
 run_watcher --reconcile
-assert "T5: race pkg not in bootstrap snapshot" \
-    "! grep -qF 'com.race.installing' '$STATE/known.txt'"
+assert "T5: race pkg recorded name-only in snapshot" \
+    "grep -qxF 'com.race.installing' '$STATE/known.txt'"
 write_uids <<EOF
 com.example.existing.a 10101
 com.race.installing 10200
 EOF
+rm -f "$TMP/firewallctl.log"
 run_watcher --reconcile
 assert "T5: race pkg blocked once uid exists" \
     "grep -qF 'set com.race.installing +REJECT_ALL' '$TMP/firewallctl.log'"
@@ -198,5 +199,25 @@ rm -f "$TMP/firewallctl.log"
 run_watcher --reconcile
 assert "T7: stable app not blocked twice" \
     "[ ! -f '$TMP/firewallctl.log' ]"
+
+# ---- T8: allowlist ignored on reinstall ----
+reset_state
+write_pm <<EOF
+package:com.reinstall.allow
+EOF
+write_uids <<EOF
+com.reinstall.allow 10501
+EOF
+run_watcher --reconcile
+echo "com.reinstall.allow" > "$STATE/allowlist.txt"
+echo "com.reinstall.allow 10501" > "$STATE/known.txt"
+echo "com.reinstall.allow" >> "$STATE/recent_uninstalled"
+write_uids <<EOF
+com.reinstall.allow 10599
+EOF
+rm -f "$TMP/firewallctl.log"
+run_watcher --reconcile
+assert "T8: allowlist ignored on reinstall" \
+    "grep -qF 'set com.reinstall.allow +REJECT_ALL' '$TMP/firewallctl.log'"
 
 exit "$fail"

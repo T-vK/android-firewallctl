@@ -59,20 +59,49 @@ notify_app_allowlist() {
     echo "$_base/files/allowlist.txt"
 }
 
+# Only module allowlist.txt exempts blocking (manual). Notify APK list is not used.
 is_allowlisted() {
     _pkg="$1"
-    if grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$_pkg"; then
+    grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" 2>/dev/null | grep -qxF "$_pkg"
+}
+
+should_force_block() {
+    _pkg="$1"
+    if was_recently_uninstalled "$_pkg"; then
         return 0
     fi
-    _app_list=$(notify_app_allowlist 2>/dev/null) || true
-    if [ -n "$_app_list" ] && [ -f "$_app_list" ]; then
-        if grep -vE '^[[:space:]]*(#|$)' "$_app_list" 2>/dev/null | grep -qxF "$_pkg"; then
-            return 0
-        fi
+    _newuid=$(package_uid "$_pkg")
+    _olduid=$(snapshot_uid_for_pkg "$_pkg")
+    if [ -n "$_newuid" ] && [ -n "$_olduid" ] && [ "$_newuid" != "$_olduid" ]; then
+        return 0
     fi
     return 1
 }
 
+remove_from_notify_allowlist() {
+    _pkg="$1"
+    _list=$(notify_app_allowlist 2>/dev/null) || return 0
+    [ -f "$_list" ] || return 0
+    _t="$STATE_DIR/.notify_allow_tmp"
+    grep -vxF "$_pkg" "$_list" 2>/dev/null >"$_t" || : >"$_t"
+    mv "$_t" "$_list"
+}
+
+snapshot_pkg_names() {
+    sed 's/ .*//' "$SNAPSHOT" 2>/dev/null | sort -u
+}
+
+count_new_package_names() {
+    _current="$1"
+    _curf="$STATE_DIR/.count_new_cur"
+    _snapf="$STATE_DIR/.count_new_snap"
+    _newf="$STATE_DIR/.count_new_out"
+    printf '%s\n' "$_current" | sort -u >"$_curf"
+    snapshot_pkg_names >"$_snapf"
+    comm -23 "$_curf" "$_snapf" 2>/dev/null >"$_newf" || : >"$_newf"
+    wc -l <"$_newf" | tr -d ' '
+    rm -f "$_curf" "$_snapf" "$_newf"
+}
 PACKAGES_LIST="${FIREWALL_PACKAGES_LIST:-/data/system/packages.list}"
 
 current_packages() {
@@ -149,7 +178,7 @@ should_block_pkg() {
         return 0
     fi
     if [ -n "$_newuid" ] && grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null; then
-        return 0
+        [ -z "$_olduid" ] && return 0
     fi
     return 1
 }
@@ -200,14 +229,8 @@ bootstrap_snapshot() {
     current_packages | while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         _line=$(snapshot_line_for "$_pkg")
-        case "$_line" in
-            *" "*)
-                printf '%s\n' "$_line" >>"$_tmp"
-                ;;
-            *)
-                log "bootstrap: defer $_pkg (no uid yet; will block on next reconcile)"
-                ;;
-        esac
+        printf '%s
+' "$_line" >>"$_tmp"
     done
     mv "$_tmp" "$SNAPSHOT"
     touch "$INIT_FLAG"
@@ -556,7 +579,7 @@ start_allow_fifo_reader() {
 
 apply_deny() {
     pkg="$1"
-    if is_allowlisted "$pkg"; then
+    if is_allowlisted "$pkg" && ! should_force_block "$pkg"; then
         log "skip $pkg (allowlisted)"
         clear_uninstalled_pkg "$pkg"
         record_snapshot_pkg "$pkg"
@@ -625,8 +648,9 @@ reconcile() {
         return 0
     fi
     _nnew=$(wc -l < "$_newfile")
-    if mass_block_detected "$_nnew"; then
-        log "SAFETY: $_nnew packages would be blocked (limit $MASS_BLOCK_LIMIT); rebuilding snapshot without blocking"
+    _nnew_names=$(count_new_package_names "$current")
+    if mass_block_detected "$_nnew_names"; then
+        log "SAFETY: $_nnew_names new package name(s) would be blocked (limit $MASS_BLOCK_LIMIT); rebuilding snapshot without blocking"
         bootstrap_snapshot
         rmdir "$LOCK" 2>/dev/null
         return 0
@@ -726,7 +750,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v26"
+log "firewall-watcher build=notify-apk-v27"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
