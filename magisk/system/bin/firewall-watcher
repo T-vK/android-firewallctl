@@ -469,6 +469,15 @@ is_package_db_event() {
 }
 
 case "$1" in
+    --allow)
+        _pkg="$2"
+        if [ -z "$_pkg" ]; then
+            echo "usage: firewall-watcher --allow <package>" >&2
+            exit 2
+        fi
+        allow_one_package "$_pkg" ""
+        exit $?
+        ;;
     --reconcile)
         reconcile
         exit 0
@@ -506,7 +515,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v16"
+log "firewall-watcher build=notify-apk-v17"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"

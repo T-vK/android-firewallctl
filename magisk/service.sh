@@ -1,6 +1,6 @@
 #!/system/bin/sh
-# Magisk late_start service - launches the firewall watcher after boot.
-# Runs as root with full SELinux context (u:r:magisk:s0).
+# Magisk late_start service - watcher daemon + FirewallNotify user APK install.
+# Runs as root (u:r:magisk:s0). Allow uses Magisk su from the user-installed app.
 
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 2
@@ -29,14 +29,28 @@ chmod 0666 "$STATE_DIR/allow_queue" /data/local/tmp/firewall_default_deny_allow 
 rm -f /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 mkfifo /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 chmod 0666 /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
-touch /data/local/tmp/firewall_default_deny_done 2>/dev/null || true
-chmod 0666 /data/local/tmp/firewall_default_deny_done 2>/dev/null || true
 
-if pm path app.firewall.notify >/dev/null 2>&1; then
+install_notify_apk() {
+    _apk="${MODDIR:-/data/adb/modules/firewall_default_deny}/FirewallNotify.apk"
+    if [ ! -f "$_apk" ]; then
+        log "WARN: FirewallNotify.apk missing at $_apk"
+        return
+    fi
+    cp "$_apk" /data/local/tmp/FirewallNotify-install.apk
+    chmod 644 /data/local/tmp/FirewallNotify-install.apk
+    if pm path app.firewall.notify >/dev/null 2>&1; then
+        pm install -r /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1 \
+            && log "FirewallNotify: updated user APK" \
+            || log "FirewallNotify: pm install -r failed"
+    else
+        pm install /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1 \
+            && log "FirewallNotify: installed user APK" \
+            || log "FirewallNotify: pm install failed"
+    fi
     pm grant app.firewall.notify android.permission.POST_NOTIFICATIONS 2>/dev/null || true
-else
-    log "WARN: app.firewall.notify not installed"
-fi
+}
+
+install_notify_apk
 
 if [ -f "$PIDFILE" ]; then
     oldpid=$(cat "$PIDFILE" 2>/dev/null)
@@ -48,5 +62,5 @@ if [ -f "$PIDFILE" ]; then
 fi
 
 nohup /system/bin/firewall-watcher >/dev/null 2>&1 &
-echo $! > "$PIDFILE"
+echo $! >"$PIDFILE"
 log "watcher started pid=$(cat "$PIDFILE" 2>/dev/null)"

@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Grants FirewallNotify the same policy control path as the root CLI. -->
-<permissions>
-    <privapp-permissions package="app.firewall.notify">
-        <permission name="android.permission.MANAGE_NETWORK_POLICY"/>
-        <permission name="android.permission.OBSERVE_NETWORK_POLICY"/>
-    </privapp-permissions>
-</permissions>

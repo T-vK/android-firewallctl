@@ -33,4 +33,5 @@ chmod 0666 /data/local/tmp/firewall_default_deny_done 2>/dev/null || true
 
 ui_print "- State directory: $STATE_DIR"
 ui_print "- Edit $STATE_DIR/allowlist.txt to exempt packages"
+ui_print "- After reboot: grant Magisk superuser to Firewall Notify when asked"
 ui_print "- Reboot to start the watcher"

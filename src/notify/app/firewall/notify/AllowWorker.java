@@ -33,7 +33,7 @@ final class AllowWorker implements Runnable {
 
     @Override
     public void run() {
-        boolean ok = AllowHelper.allowPackage(appContext, pkg);
+        boolean ok = AllowHelper.allowPackage(pkg);
         Handler main = new Handler(Looper.getMainLooper());
         if (activity != null) {
             main.post(new AllowUiDone(activity, pkg, ok));

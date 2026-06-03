@@ -1,5 +1,5 @@
 /*
- * Trampoline started by the root watcher to signal allow success in-process.
+ * Legacy trampoline from root watcher (optional).
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
@@ -12,11 +12,6 @@ public final class AllowCompleteActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        String pkg = getIntent().getStringExtra(NotifyHelper.EXTRA_PACKAGE);
-        if (pkg != null && !pkg.isEmpty()) {
-            AllowCompleteReceiver.signalComplete(pkg);
-            AllowHelper.clearCompleteMarker(getApplicationContext());
-        }
         finish();
     }
 }
