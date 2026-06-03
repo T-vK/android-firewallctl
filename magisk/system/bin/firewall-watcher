@@ -897,16 +897,9 @@ establish_baseline_when_ready() {
 
 
 build_inotify_targets() {
+    # Watch package DB files only — never the whole /data/system tree (too noisy).
     _out=""
-    if [ -d "$WATCH_DIR" ]; then
-        _out="$WATCH_DIR"
-    fi
-    for _f in "$PACKAGES_LIST" "$WATCH_DIR/packages.xml"; do
-        [ -n "$_f" ] || continue
-        [ -e "$_f" ] || continue
-        case " $_out " in *" $_f "*) ;; *) _out="$_out $_f" ;; esac
-    done
-    for _f in "$ALLOW_QUEUE_LOCAL" "$ALLOW_QUEUE"; do
+    for _f in "$PACKAGES_LIST"         "$WATCH_DIR/packages.xml"         "$WATCH_DIR/packages.xml.new"         "$PACKAGES_LIST.new"; do
         [ -n "$_f" ] || continue
         [ -e "$_f" ] || continue
         case " $_out " in *" $_f "*) ;; *) _out="$_out $_f" ;; esac
@@ -932,14 +925,14 @@ run_inotifyd_once() {
 
 is_package_db_event() {
     for _arg in "$@"; do
+        _base=${_arg##*/}
         case "$_arg" in
-            packages.xml|packages.list|*/packages.xml|*/packages.list)
+            */packages.xml|*/packages.list|*/packages.xml.new|*/packages.list.new)
                 return 0
                 ;;
         esac
-        _base=${_arg##*/}
         case "$_base" in
-            packages.xml|packages.list)
+            packages.xml|packages.list|packages.xml.new|packages.list.new)
                 return 0
                 ;;
         esac
@@ -947,16 +940,6 @@ is_package_db_event() {
     return 1
 }
 
-is_allow_queue_event() {
-    for _arg in "$@"; do
-        case "$_arg" in
-            allow_queue|firewall_default_deny_allow|*/allow_queue|*/firewall_default_deny_allow*)
-                return 0
-                ;;
-        esac
-    done
-    return 1
-}
 
 # --- dispatch ---
 
@@ -1017,10 +1000,6 @@ case "$1" in
     *)
         if is_package_db_event "$@"; then
             wake_daemon "inotify:package-db"
-        elif is_allow_queue_event "$@"; then
-            wake_daemon "inotify:allow-queue"
-        else
-            log "ERROR: inotifyd callback ignored unknown event args: $*"
         fi
         exit 0
         ;;
@@ -1050,7 +1029,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v47"
+log "firewall-watcher build=memdiff-v48"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker
