@@ -126,8 +126,26 @@ if [ ! -x "$AM" ] 2>/dev/null; then
     [ -n "$_am" ] && [ -x "$_am" ] && AM="$_am"
 fi
 
+notify_module_apk() {
+    _mod="${MODDIR:-/data/adb/modules/firewall_default_deny}"
+    if [ -f "$_mod/system/priv-app/FirewallNotify/FirewallNotify.apk" ]; then
+        echo "$_mod/system/priv-app/FirewallNotify/FirewallNotify.apk"
+        return 0
+    fi
+    if [ -f "$_mod/FirewallNotify.apk" ]; then
+        echo "$_mod/FirewallNotify.apk"
+        return 0
+    fi
+    return 1
+}
+
 notify_apk_path() {
-    "$PM" path "$NOTIFY_APK_COMPONENT" 2>/dev/null | head -1 | sed 's/^package://'
+    _p=$("$PM" path "$NOTIFY_APK_COMPONENT" 2>/dev/null | head -1 | sed 's/^package://')
+    if [ -n "$_p" ] && [ -f "$_p" ]; then
+        echo "$_p"
+        return 0
+    fi
+    notify_module_apk
 }
 notify_apk_data_dir() {
     if [ -d "/data/user/0/$NOTIFY_APK_COMPONENT" ]; then
@@ -215,6 +233,12 @@ notify_via_am_direct() {
 notify_user_inner() {
     pkg="$1"
     sleep 1
+    if ! pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
+        if notify_shell_cmd "$pkg"; then
+            log "notify: cmd notification posted for $pkg (no apk)"
+            return 0
+        fi
+    fi
     if notify_via_app_process "$pkg"; then
         log "notify: app_process posted for $pkg"
         return 0
@@ -515,7 +539,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v17"
+log "firewall-watcher build=notify-apk-v18"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"

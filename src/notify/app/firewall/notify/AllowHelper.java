@@ -1,5 +1,5 @@
 /*
- * Allow network via Magisk su + root watcher (same path as manual "su -c firewall-allow-app").
+ * Allow: Magisk su when granted, else queue for root watcher (priv-app / no su).
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
@@ -8,29 +8,35 @@ import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 final class AllowHelper {
 
     private static final String TAG = "FirewallNotify";
 
+    private static final String QUEUE_LOCAL = "/data/local/tmp/firewall_default_deny_allow";
+
+    private static final String QUEUE_STATE =
+            "/data/adb/firewall_default_deny/allow_queue";
+
     private AllowHelper() {
     }
 
-    /**
-     * Runs {@code firewall-watcher --allow <pkg>} as root. Requires Magisk superuser
-     * granted to this app (user-installed APK, not a system app).
-     */
     static boolean allowPackage(String pkg) {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
-        int rc = runRootAllow(pkg);
-        if (rc == 0) {
-            Log.i(TAG, "allow ok: " + pkg);
+        if (runRootAllow(pkg) == 0) {
+            Log.i(TAG, "allow ok (root): " + pkg);
             return true;
         }
-        Log.w(TAG, "allow failed rc=" + rc + " pkg=" + pkg + " (grant Magisk su to Firewall Notify)");
+        if (appendQueue(pkg)) {
+            Log.i(TAG, "allow queued for watcher: " + pkg);
+            return true;
+        }
+        Log.w(TAG, "allow failed: no su and queue write failed for " + pkg);
         return false;
     }
 
@@ -50,6 +56,27 @@ final class AllowHelper {
             }
         }
         return last;
+    }
+
+    private static boolean appendQueue(String pkg) {
+        byte[] line = (pkg + "\n").getBytes(StandardCharsets.UTF_8);
+        for (String path : new String[] {QUEUE_LOCAL, QUEUE_STATE}) {
+            try {
+                File file = new File(path);
+                File parent = file.getParentFile();
+                if (parent != null && !parent.exists()) {
+                    parent.mkdirs();
+                }
+                FileOutputStream fos = new FileOutputStream(file, true);
+                fos.write(line);
+                fos.close();
+                Log.i(TAG, "allow queue: " + pkg + " via " + path);
+                return true;
+            } catch (Throwable t) {
+                Log.w(TAG, "allow queue " + path + ": " + t.getMessage());
+            }
+        }
+        return false;
     }
 
     private static String findSu() {

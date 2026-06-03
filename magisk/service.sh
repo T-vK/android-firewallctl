@@ -1,6 +1,5 @@
 #!/system/bin/sh
-# Magisk late_start service - watcher daemon + FirewallNotify user APK install.
-# Runs as root (u:r:magisk:s0). Allow uses Magisk su from the user-installed app.
+# Magisk late_start service - watcher + FirewallNotify (priv-app overlay or pm install fallback).
 
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 2
@@ -11,6 +10,7 @@ sleep 15
 STATE_DIR=/data/adb/firewall_default_deny
 PIDFILE="$STATE_DIR/watcher.pid"
 LOGFILE="$STATE_DIR/watcher.log"
+MOD="${MODDIR:-/data/adb/modules/firewall_default_deny}"
 mkdir -p "$STATE_DIR"
 
 log() {
@@ -30,31 +30,45 @@ rm -f /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 mkfifo /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 chmod 0666 /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 
-install_notify_apk() {
-    _apk="${MODDIR:-/data/adb/modules/firewall_default_deny}/FirewallNotify.apk"
-    if [ ! -f "$_apk" ]; then
-        log "WARN: FirewallNotify.apk missing at $_apk"
-        return
+find_notify_apk() {
+    if [ -f "$MOD/system/priv-app/FirewallNotify/FirewallNotify.apk" ]; then
+        echo "$MOD/system/priv-app/FirewallNotify/FirewallNotify.apk"
+        return 0
     fi
-    cp "$_apk" /data/local/tmp/FirewallNotify-install.apk
-    chmod 644 /data/local/tmp/FirewallNotify-install.apk
-    if pm path app.firewall.notify >/dev/null 2>&1; then
-        if pm install -r /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
-            log "FirewallNotify: updated user APK"
-        else
-            log "FirewallNotify: pm install -r failed"
-        fi
-    else
-        if pm install /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
-            log "FirewallNotify: installed user APK"
-        else
-            log "FirewallNotify: pm install failed"
-        fi
+    if [ -f "$MOD/FirewallNotify.apk" ]; then
+        echo "$MOD/FirewallNotify.apk"
+        return 0
     fi
-    pm grant app.firewall.notify android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+    return 1
 }
 
-install_notify_apk
+ensure_notify_app() {
+    if pm path app.firewall.notify >/dev/null 2>&1; then
+        log "FirewallNotify: $(pm path app.firewall.notify 2>/dev/null | head -1)"
+        pm grant app.firewall.notify android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+        return 0
+    fi
+    log "WARN: app.firewall.notify not visible to pm (priv-app overlay missing?)"
+    _apk=$(find_notify_apk) || {
+        log "ERROR: FirewallNotify.apk not found under $MOD"
+        return 1
+    }
+    cp "$_apk" /data/local/tmp/FirewallNotify-install.apk
+    chmod 644 /data/local/tmp/FirewallNotify-install.apk
+    if pm install -r -g -d --user 0 /data/local/tmp/FirewallNotify-install.apk >>"$LOGFILE" 2>&1; then
+        log "FirewallNotify: installed via pm (fallback)"
+    elif cmd package install -r -g --user 0 -t /data/local/tmp/FirewallNotify-install.apk \
+            >>"$LOGFILE" 2>&1; then
+        log "FirewallNotify: installed via cmd package install (fallback)"
+    else
+        log "ERROR: pm/cmd install FirewallNotify failed (see log above)"
+        return 1
+    fi
+    pm grant app.firewall.notify android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+    return 0
+}
+
+ensure_notify_app
 
 if [ -f "$PIDFILE" ]; then
     oldpid=$(cat "$PIDFILE" 2>/dev/null)

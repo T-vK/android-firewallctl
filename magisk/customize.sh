@@ -1,20 +1,17 @@
 # shellcheck shell=sh
 # Magisk customize.sh for firewall_default_deny.
-# Runs in Magisk's busybox at install time. We only set permissions and
-# create the persistent state directory. The watcher itself is started by
-# service.sh after boot.
 
 # shellcheck disable=SC2034  # read by Magisk's installer environment
 SKIPUNZIP=0
 
 ui_print "- Firewall Default Deny installing"
-ui_print "- Files will overlay into /system/bin/"
+ui_print "- Files will overlay into /system/bin/ and system/priv-app/"
 
-# Ensure executables are marked as such on the overlay.
 set_perm_recursive "$MODPATH/system/bin" 0 0 0755 0755
+if [ -d "$MODPATH/system/priv-app/FirewallNotify" ]; then
+    set_perm_recursive "$MODPATH/system/priv-app/FirewallNotify" 0 0 0755 0644
+fi
 
-# Persistent runtime state. Created here so the daemon can write to it
-# even before its first run.
 STATE_DIR=/data/adb/firewall_default_deny
 mkdir -p "$STATE_DIR"
 [ -f "$STATE_DIR/allowlist.txt" ] || cat > "$STATE_DIR/allowlist.txt" <<'EOF'
@@ -28,10 +25,16 @@ chmod 0666 "$STATE_DIR/allow_queue" /data/local/tmp/firewall_default_deny_allow 
 rm -f /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 mkfifo /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 chmod 0666 /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
-touch /data/local/tmp/firewall_default_deny_done 2>/dev/null || true
-chmod 0666 /data/local/tmp/firewall_default_deny_done 2>/dev/null || true
+
+if [ -f "$MODPATH/system/priv-app/FirewallNotify/FirewallNotify.apk" ]; then
+    ui_print "- FirewallNotify: priv-app (active after reboot)"
+elif [ -f "$MODPATH/FirewallNotify.apk" ]; then
+    ui_print "- FirewallNotify.apk bundled (pm install fallback on boot)"
+else
+    ui_print "! WARN: FirewallNotify.apk missing from module zip"
+fi
 
 ui_print "- State directory: $STATE_DIR"
 ui_print "- Edit $STATE_DIR/allowlist.txt to exempt packages"
-ui_print "- After reboot: grant Magisk superuser to Firewall Notify when asked"
+ui_print "- Optional: grant Magisk superuser to Firewall Notify for Allow"
 ui_print "- Reboot to start the watcher"
