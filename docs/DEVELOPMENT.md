@@ -96,11 +96,27 @@ docs/                             # User & architecture documentation
 | `scripts/install-detect-inotify.sh` | Log inotify events under `/data/system` |
 | `scripts/install-detect-benchmark.sh` | Legacy timing helper (references obsolete `known.txt`) |
 
+## Git hooks (required for contributors)
+
+Cursor may install hooks under `~/.cursor/agent-hooks/` that append
+`Co-authored-by:` lines. This repo does **not** use those.
+
+After clone, run once:
+
+```bash
+./scripts/setup-git.sh
+```
+
+That removes the Cursor agent hooks for this workspace, sets your author
+identity, and points `core.hooksPath` at `.githooks/` (strips any
+`Co-authored-by` trailer from commit messages).
+
 ## Contributing
 
 1. Do not change runtime behavior without maintainer sign-off — the stack is validated on a single device/ROM.
 2. Prefer doc fixes and host tests for regressions in docs/packaging.
 3. Use `feat:` / `fix:` (and other conventional types) in commit messages for releases.
+4. Never add `Co-authored-by:` trailers to commits in this repository.
 
 ## License
 
