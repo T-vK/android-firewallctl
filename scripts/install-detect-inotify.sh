@@ -4,9 +4,13 @@
 #
 #   adb push scripts/install-detect-inotify.sh /data/local/tmp/
 #   adb shell su -c 'sh /data/local/tmp/install-detect-inotify.sh'
+#
+# inotifyd must exec the handler; /data/local/tmp is often noexec (Permission denied).
+# This script installs a copy under /data/adb/ and runs inotifyd on that path.
 
 BASE=/data/local/tmp/.ni_base
 CUR=/data/local/tmp/.ni_cur
+RUNNER=/data/adb/firewall_default_deny/install-detect-inotify.sh
 CMD="${CMD:-/system/bin/cmd}"
 [ -x "$CMD" ] || CMD=cmd
 
@@ -49,7 +53,7 @@ is_package_db_event() {
     return 1
 }
 
-# inotifyd callback (not the initial launcher).
+# inotifyd callback (invoked with event args, not as "sh script").
 if [ $# -gt 0 ]; then
     if is_package_db_event "$@"; then
         detect_new
@@ -62,7 +66,19 @@ command -v inotifyd >/dev/null 2>&1 || {
     exit 1
 }
 
+_src=/data/local/tmp/install-detect-inotify.sh
+if [ -f "$0" ] && [ "$0" != "sh" ]; then
+    _src="$0"
+elif [ -f "${1:-}" ]; then
+    _src="$1"
+fi
+
+mkdir -p /data/adb/firewall_default_deny
+cp "$_src" "$RUNNER"
+chmod 755 "$RUNNER"
+
 pm list packages -3 2>/dev/null | sed 's/^package://' | sort -u >"$BASE"
 echo "baseline $(wc -l <"$BASE" | tr -d ' ') user packages; notifications on new installs"
+echo "handler: $RUNNER"
 echo "watching packages.list + packages.xml (Ctrl+C to stop)"
-exec inotifyd "$0" /data/system/packages.list /data/system/packages.xml
+exec inotifyd "$RUNNER" /data/system/packages.list /data/system/packages.xml
