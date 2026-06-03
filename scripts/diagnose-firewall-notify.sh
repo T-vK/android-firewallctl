@@ -17,7 +17,14 @@ do
 done
 
 echo ""
-echo "=== PackageManager ==="
+echo "=== Enable notifications (best-effort) ===
+if [ -x /system/bin/cmd ]; then
+    cmd notification unsuspend_package app.firewall.notify 2>&1 || true
+    cmd appops set app.firewall.notify POST_NOTIFICATION allow 2>&1 || true
+    cmd notification set_notifications_enabled_for_package app.firewall.notify true 2>&1 || true
+fi
+
+=== PackageManager ==="
 pm path app.firewall.notify 2>&1 || echo "  pm path failed"
 pm list packages -U app.firewall.notify 2>&1 || true
 dumpsys package app.firewall.notify 2>/dev/null | grep -E 'userId=|versionCode|versionName' | head -5

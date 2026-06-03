@@ -286,8 +286,16 @@ notify_unsuspend_app() {
     fi
 }
 
+notify_enable_app() {
+    if [ -x "$CMD" ]; then
+        "$CMD" notification set_notifications_enabled_for_package "$NOTIFY_APK_COMPONENT" true \
+            >>"$LOGFILE" 2>&1 || true
+    fi
+}
+
 notify_grant_permissions() {
     notify_unsuspend_app
+    notify_enable_app
     "$PM" grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS \
         >>"$LOGFILE" 2>&1 || true
     if [ -x "$CMD" ]; then
@@ -298,19 +306,25 @@ notify_grant_permissions() {
 
 notify_verify_posted() {
     _pkg="$1"
-    # Host tests / CI have no dumpsys; on device we require a visible posted notification.
     if [ -n "${FIREWALL_SKIP_NOTIFY_VERIFY:-}" ] || ! command -v dumpsys >/dev/null 2>&1; then
         return 0
     fi
     _tag="firewall_default_deny_${_pkg}"
     _n=0
-    while [ "$_n" -lt 15 ]; do
-        if dumpsys notification --noredact 2>/dev/null | grep -q "tag=${_tag}"; then
+    while [ "$_n" -lt 20 ]; do
+        _dump=$(dumpsys notification --noredact 2>/dev/null) || _dump=""
+        # Tag appears as tag=... or inside NotificationRecord; shell/cmd posts count too.
+        if printf '%s' "$_dump" | grep -q "$_tag"; then
+            return 0
+        fi
+        if printf '%s' "$_dump" | grep -q "pkg=app.firewall.notify" \
+                && printf '%s' "$_dump" | grep -q "$_pkg"; then
             return 0
         fi
         _n=$((_n + 1))
-        sleep 0.1
+        sleep 0.15
     done
+    log "notify: verify failed (no active notification for $_pkg in dumpsys)"
     return 1
 }
 
@@ -355,14 +369,14 @@ notify_shell_cmd() {
     if [ -x "$CMD" ]; then
         if [ "$(id -u 2>/dev/null)" = "0" ]; then
             "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body" \
-                >>"$LOGFILE" 2>&1 && return 0
+                >>"$LOGFILE" 2>&1 && notify_verify_posted "$_pkg" && return 0
         fi
         if [ -x /system/bin/su ]; then
             /system/bin/su 2000 "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body" \
-                >>"$LOGFILE" 2>&1 && return 0
+                >>"$LOGFILE" 2>&1 && notify_verify_posted "$_pkg" && return 0
         fi
         "$CMD" notification post -S bigtext -t "$_title" "$_tag" "$_body" \
-            >>"$LOGFILE" 2>&1 && return 0
+            >>"$LOGFILE" 2>&1 && notify_verify_posted "$_pkg" && return 0
     fi
     return 1
 }
@@ -370,14 +384,32 @@ notify_shell_cmd() {
 notify_via_foreground_service() {
     _pkg="$1"
     _comp="${NOTIFY_APK_COMPONENT}/.NotifyService"
-    if "$AM" start-foreground-service --user 0 \
-            -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
-        notify_verify_posted "$_pkg" && return 0
-    fi
-    if "$AM" startservice --user 0 \
-            -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
-        notify_verify_posted "$_pkg" && return 0
-    fi
+    _err="$STATE_DIR/.notify_fgs_err"
+    for _try in \
+        "start-foreground-service" \
+        "startforegroundservice" \
+        "start-service" \
+        "startservice"
+    do
+        case "$_try" in
+            start-foreground-service|startforegroundservice)
+                if "$AM" "$_try" --user 0 -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>"$_err"; then
+                    sleep 0.5
+                    notify_verify_posted "$_pkg" && return 0
+                    log "notify: $_try ok but verify failed for $_pkg"
+                fi
+                ;;
+            *)
+                if "$AM" "$_try" --user 0 -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>"$_err"; then
+                    sleep 0.5
+                    notify_verify_posted "$_pkg" && return 0
+                fi
+                ;;
+        esac
+        [ -s "$_err" ] && cat "$_err" >>"$LOGFILE" 2>/dev/null
+        : >"$_err"
+    done
+    rm -f "$_err" 2>/dev/null
     return 1
 }
 
@@ -476,6 +508,10 @@ notify_user_inner() {
     [ -n "$_pkg" ] || return 1
     ensure_notify_ready
 
+    if notify_shell_cmd "$_pkg"; then
+        log "notify: path=cmd pkg=$_pkg"
+        return 0
+    fi
     if notify_via_foreground_service "$_pkg"; then
         log "notify: path=foreground_service pkg=$_pkg"
         return 0
@@ -494,10 +530,6 @@ notify_user_inner() {
     fi
     if notify_via_service "$_pkg"; then
         log "notify: path=service pkg=$_pkg"
-        return 0
-    fi
-    if notify_shell_cmd "$_pkg"; then
-        log "notify: path=cmd pkg=$_pkg"
         return 0
     fi
     return 1
@@ -842,6 +874,10 @@ case "$1" in
             exit 0
         fi
         echo "FAIL: all notification paths failed (see $LOGFILE)" >&2
+        if [ -f "$LOGFILE" ]; then
+            echo "--- watcher.log (notify) ---"
+            grep -E 'notify:|NotifyRunner|NotifyService|notification post|ERROR: notify' "$LOGFILE" 2>/dev/null | tail -25
+        fi
         exit 1
         ;;
     --reconcile)
@@ -890,7 +926,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v39"
+log "firewall-watcher build=memdiff-v40"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker

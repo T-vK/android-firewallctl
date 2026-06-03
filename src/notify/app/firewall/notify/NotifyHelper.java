@@ -26,7 +26,6 @@ public final class NotifyHelper {
     public static final String EXTRA_KIND = "kind";
     public static final String EXTRA_WHEN = "when";
     public static final String KIND_INSTALL_DETECT = "install_detect";
-    /** Warmup: create channel only (no user-visible notification). */
     public static final String PACKAGE_CHANNEL_INIT = "__firewall_notify_init__";
 
     private static final String CHANNEL_ID = "firewall_block_alert_v4";
@@ -72,17 +71,30 @@ public final class NotifyHelper {
         nm.createNotificationChannel(channel);
     }
 
-    /** True if our block notification is in the active set (posted, not dropped). */
+  /** Match by package + notification id; tag may be null for startForeground-only posts. */
     public static boolean isBlockedNotificationActive(NotificationManager nm, String pkg) {
-        if (nm == null || pkg == null || pkg.isEmpty()) {
+        if (nm == null) {
             return false;
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return true;
         }
-        String tag = notificationTag(pkg);
+        String wantTag = pkg != null && !pkg.isEmpty() ? notificationTag(pkg) : null;
         for (android.service.notification.StatusBarNotification n : nm.getActiveNotifications()) {
-            if (n.getId() == NOTIFICATION_ID && tag.equals(n.getTag())) {
+            if (!"app.firewall.notify".equals(n.getPackageName())) {
+                continue;
+            }
+            if (n.getId() != NOTIFICATION_ID) {
+                continue;
+            }
+            String gotTag = n.getTag();
+            if (wantTag == null || wantTag.isEmpty()) {
+                return true;
+            }
+            if (wantTag.equals(gotTag)) {
+                return true;
+            }
+            if (gotTag == null || gotTag.isEmpty()) {
                 return true;
             }
         }
@@ -90,12 +102,12 @@ public final class NotifyHelper {
     }
 
     public static boolean waitForBlockedNotificationActive(NotificationManager nm, String pkg) {
-        for (int i = 0; i < 25; i++) {
+        for (int i = 0; i < 30; i++) {
             if (isBlockedNotificationActive(nm, pkg)) {
                 return true;
             }
             try {
-                Thread.sleep(80L);
+                Thread.sleep(100L);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
                 return false;
@@ -107,7 +119,6 @@ public final class NotifyHelper {
     private NotifyHelper() {
     }
 
-    /** Build block alert; falls back to a minimal notification if PendingIntents fail. */
     public static Notification buildBlockedNotification(Context context, String pkg) {
         if (pkg == null || pkg.isEmpty()) {
             return null;
@@ -187,27 +198,26 @@ public final class NotifyHelper {
         }
     }
 
-    /** Post via startForeground so the system actually shows the notification. */
     public static void showBlockedForeground(Service service, String pkg) {
         if (service == null || pkg == null || pkg.isEmpty()) {
             return;
         }
+        Context app = service.getApplicationContext();
+        NotificationManager nm =
+                (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
         if (PACKAGE_CHANNEL_INIT.equals(pkg)) {
-            Context app = service.getApplicationContext();
-            NotificationManager nm =
-                    (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
             ensureChannel(nm);
             return;
         }
-        Context app = service.getApplicationContext();
         Notification notification = buildBlockedNotification(app, pkg);
         if (notification == null) {
             throw new RuntimeException("buildBlockedNotification returned null");
         }
+        String tag = notificationTag(pkg);
+        if (nm != null) {
+            nm.notify(tag, NOTIFICATION_ID, notification);
+        }
         service.startForeground(NOTIFICATION_ID, notification);
-        NotificationManager nm =
-                (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.notify(notificationTag(pkg), NOTIFICATION_ID, notification);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             service.stopForeground(Service.STOP_FOREGROUND_DETACH);
         } else {

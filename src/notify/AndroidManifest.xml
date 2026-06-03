@@ -1,24 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="app.firewall.notify"
-    android:versionCode="19"
-    android:versionName="1.0.19">
+    android:versionCode="20"
+    android:versionName="1.0.20">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="32" />
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="false"
         android:directBootAware="true"
         android:icon="@drawable/ic_stat_notify"
         android:label="Firewall Notify">
-
-        <property
-            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-            android:value="Firewall block alerts for newly installed apps" />
 
         <activity
             android:name=".PostNotificationActivity"
@@ -31,7 +26,7 @@
             android:name=".NotifyService"
             android:directBootAware="true"
             android:exported="true"
-            android:foregroundServiceType="specialUse" />
+            />
 
         <receiver
             android:name=".NotifyReceiver"
