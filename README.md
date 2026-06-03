@@ -1,191 +1,124 @@
 # android-firewallctl
 
-Per-app Android firewall control for rooted devices, driven through the
-real `NetworkPolicyManager` so changes show up in the system Settings UI
-(LineageOS/AOSP "Apps → \<app\> → Mobile data & Wi-Fi"). No VPN, no
-iptables hooks, no separate state to drift out of sync.
+Block or allow network access **per app** on a rooted phone, using the same
+mechanism as **Settings → Apps → \<app\> → Mobile data & Wi‑Fi**. Changes
+show up in the system UI immediately — no VPN, no separate iptables rules.
 
-The project ships three artifacts:
+**What you get**
 
-| Artifact | What it is | Where it lands |
-|---|---|---|
-| `firewallctl.dex.jar` + wrapper | A reflection-based CLI that talks to `INetworkPolicyManager` via `app_process`. | `/data/local/tmp/` or `$PREFIX/bin/` (Termux) |
-| `firewallctl_*.deb` | Termux-compatible Debian package of the CLI. | `dpkg -i` inside Termux |
-| `firewall_default_deny_*.zip` | Magisk module that ships the CLI and an `inotifyd`-based watcher that auto-blocks Internet for every newly installed user app. | Magisk Manager → Install from storage |
+| Install this | You get |
+|---|---|
+| **Magisk module** (`firewall_default_deny_*.zip`) | New user apps are blocked by default; tap the notification to allow. |
+| **CLI only** (`firewallctl.dex.jar` + wrapper) | Manual `get` / `set` / `clear` from adb, Termux, or scripts. |
+| **Termux .deb** | CLI installed under Termux’s prefix. |
 
-> **Requires root.** The CLI talks to a `signature|privileged` system
-> service via `app_process`; this only works as root. Tested against
-> LineageOS 20+.
+> **Root required.** The CLI talks to Android’s network policy service as root.
+
+**Tested setup (only configuration verified by the maintainer):** LineageOS 23,
+Magisk, Google Pixel 4. Other ROMs or devices may work but are unsupported.
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ---
 
-## Quick start (the CLI)
+## Magisk module (recommended)
+
+1. Download **`firewall_default_deny_*.zip`** from [GitHub Releases](https://github.com/T-vK/android-firewallctl/releases) (or build with `make magisk`).
+2. Magisk → **Modules** → Install from storage → **Reboot**.
+3. Install a new app from the store. You should get a notification that it was blocked; use **Allow** (or clear the block in Settings).
+
+The watcher keeps the list of known third-party apps **in memory only** (not
+`known.txt`). On each package-database change it blocks new installs with
+`firewallctl set <pkg> +REJECT_ALL` and shows a **FirewallNotify** notification.
+
+**Exempt a sideloaded app** (optional): edit  
+`/data/adb/firewall_default_deny/allowlist.txt` — one package name per line, `#` for comments.  
+This file is **only** for apps you install by hand; the module never writes it.  
+Changes apply on the next package-database update (e.g. another install), not instantly for already-installed apps.
+
+**Logs:** `/data/adb/firewall_default_deny/watcher.log`  
+**More detail:** [docs/STATE.md](docs/STATE.md), [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+
+---
+
+## CLI only (adb)
 
 ```bash
-make                       # build build/firewallctl.dex.jar
+make
 adb push build/firewallctl.dex.jar /data/local/tmp/
 adb push scripts/firewallctl /data/local/tmp/
 adb shell su -c 'chmod 0755 /data/local/tmp/firewallctl'
 
 adb shell su -c '/data/local/tmp/firewallctl list-policies'
-adb shell su -c '/data/local/tmp/firewallctl get  com.android.chrome'
-adb shell su -c '/data/local/tmp/firewallctl set  com.android.chrome +REJECT_ALL'
+adb shell su -c '/data/local/tmp/firewallctl get com.android.chrome'
+adb shell su -c '/data/local/tmp/firewallctl set com.android.chrome +REJECT_ALL'
 adb shell su -c '/data/local/tmp/firewallctl clear com.android.chrome'
 ```
 
-Available policy flags mirror the system constants — `REJECT_METERED`,
-`ALLOW_METERED`, `REJECT_ALL`, plus anything else exposed by the local
-`NetworkPolicyManager` (resolved reflectively at runtime so the CLI
-stays compatible across Lineage versions).
+Typical flags: `+REJECT_ALL` (block all networks), `-REJECT_ALL` (remove that bit).  
+Run `list-policies` on your device to see names your ROM exposes.
 
-## Quick start (Termux .deb)
+---
+
+## Termux
 
 ```bash
 make deb
-adb push build/firewallctl_*_all.deb /sdcard/Download/
-# in Termux:
-mv ~/storage/downloads/firewallctl_*_all.deb .
+# copy firewallctl_*_all.deb to the phone, then in Termux:
 dpkg -i firewallctl_*_all.deb
 tsu -c 'firewallctl list-policies'
 ```
 
-## Quick start (Magisk module: default-deny for new apps)
+---
+
+## Notifications not showing?
+
+On the device as root:
 
 ```bash
-make magisk
-adb push build/firewall_default_deny_*.zip /sdcard/
-# Magisk Manager → Modules → Install from storage → reboot
+/system/bin/firewall-watcher --test-notify com.example.someapp
 ```
 
-After reboot, a watcher daemon runs as root. It:
-
-1. Watches `/data/system/` via `inotifyd`. When `packages.xml` changes
-   (i.e. PMS just committed an install), it reconciles `pm list packages -3`
-   against a snapshot at `/data/adb/firewall_default_deny/known.txt`.
-2. For each new third-party package not on the allowlist, it invokes
-   `firewallctl set <pkg> +REJECT_ALL`. The change is **immediately
-   reflected in the system Settings UI**.
-3. Posts a shell-level notification via `cmd notification`.
-4. End-to-end latency from `close_write` on `packages.xml` to policy
-   applied is typically 150–400 ms — fast enough to win the race against
-   most "Open" taps post-install.
-
-
-### Allowlist
-
-Plain text, one package per line, `#` for comments:
-
-```
-/data/adb/firewall_default_deny/allowlist.txt
-```
-
-Edits take effect on the next install event — no restart required.
-
-### State directory
-
-```
-/data/adb/firewall_default_deny/
-├── allowlist.txt        # user-editable
-├── known.txt            # snapshot of third-party packages
-├── reconcile.lock/      # transient (mkdir) lock during reconcile
-└── watcher.log          # daemon log (trimmed to 500 lines on each start)
-```
-
-### Tunables
-
-| Env var | Default | Effect |
-|---|---|---|
-| `FIREWALL_STATE_DIR` | `/data/adb/firewall_default_deny` | State directory location. Mainly for tests. |
-| `FIREWALL_WATCH_DIR` | `/data/system` | Directory watched by `inotifyd` (event-driven only; no periodic package poll). |
-
-Set them in `service.sh` if you want different defaults baked into the
-module.
+Or push and run `scripts/test-firewall-notify.sh` / `scripts/diagnose-firewall-notify.sh`.  
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ---
 
-## How it works (short version)
+## How it works (one paragraph)
 
-The Settings toggles for per-app data restrictions are surfaced by
-`NetworkPolicyManagerService`. The UI calls
-`NetworkPolicyManager.setUidPolicy(uid, mask)`; NPMS programs `netd`
-(iptables/eBPF) and persists the policy bits. Any "firewall" that
-manipulates iptables directly (AFWall+, NetBlock, Net Switch, …) ends
-up out of sync with that UI because the policy bits NPMS knows about
-never change.
+Android’s **NetworkPolicyManager** stores per-app rules and applies them in the kernel.  
+`firewallctl` sets those rules via the same Binder API the Settings app uses.  
+The Magisk module runs a small daemon that notices new third-party installs and calls `firewallctl set <pkg> +REJECT_ALL`, then asks **FirewallNotify** to show an actionable notification.
 
-`firewallctl` calls the *same* `setUidPolicy` entrypoint, via Binder
-reflection from an `app_process` host. The settings UI sees the change
-immediately, because there's only one source of truth.
-
-The Magisk module wraps the CLI in an `inotifyd`-driven watcher so that
-"default deny for new installs" is just a series of `setUidPolicy`
-calls — no Xposed hooks, no VPN, no extra netfilter rules.
-
-For the design discussion and gotchas (broadcast races, atomic-file
-write semantics, why we watch the directory not the file), see the
-inline comments in `magisk/system/bin/firewall-watcher`.
+Deep dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
-## Build
-
-Requirements: `make`, `javac` (OpenJDK 8+), `zip`, `unzip`, `dpkg-dev`,
-and either `d8`/`dx` from the Android SDK build-tools **or** an internet
-connection (the Makefile fetches R8 on demand; R8 needs Java 11+).
+## Build & test (developers)
 
 ```bash
-make           # build/firewallctl.dex.jar
-make deb       # build/firewallctl_<ver>_all.deb
-make magisk    # build/firewall_default_deny_<ver>.zip
-make test      # run the host test suite (auto-builds artifacts first)
-make clean
+make              # firewallctl.dex.jar
+make deb          # Termux package
+make magisk       # module zip (needs ANDROID_HOME for FirewallNotify.apk)
+make test-host    # watcher + shellcheck + doc checks (no Android SDK)
+make test         # full suite including packaging (needs SDK)
 ```
 
-## Tests
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-Host-side tests live in `tests/` and run on every push via GitHub
-Actions:
+---
 
-| File | What it checks |
+## Documentation
+
+| Doc | Contents |
 |---|---|
-| `tests/test-watcher.sh` | Functional tests of `firewall-watcher` driven through `--reconcile` and `inotifyd`-style callback args, with stub `pm`/`firewallctl`/`cmd` on `PATH`. Covers initial snapshot, new-install detection, allowlist skip, callback filename filter, and lockfile serialization. |
-| `tests/test-packaging.sh` | Structural assertions on the built `.deb` (Termux prefix paths, correct CLASSPATH inside the wrapper) and Magisk zip (required entries, `module.prop` fields, valid DEX magic in the dex jar). |
-| `tests/test-shellcheck.sh` | Shellcheck across every shell script in the repo. |
-
-Add a new check by dropping a `tests/test-*.sh` into the directory —
-`tests/run-tests.sh` auto-discovers it.
-
-## CI & releases
-
-`.github/workflows/ci.yml` runs on every push and PR:
-
-- Builds dex jar, `.deb`, and Magisk zip.
-- Runs the host test suite.
-- Uploads all three artifacts to the workflow run.
-
-Versioning and releases are fully automated with
-[semantic-release](https://semantic-release.gitbook.io/). On every push
-to `main`, the `release` job inspects the
-[Conventional Commits](https://www.conventionalcommits.org/) since the
-last release and:
-
-- Computes the next [SemVer](https://semver.org/) version
-  (`fix:`/`perf:` → patch, `feat:` → minor, `BREAKING CHANGE:` → major).
-- Builds version-stamped artifacts via `make dist VERSION=<next>`:
-  `firewallctl-<ver>.dex.jar`, `firewallctl_<ver>_all.deb`, and
-  `firewall_default_deny_v<ver>.zip` (the Magisk `module.prop`
-  `version`/`versionCode` are stamped to match).
-- Tags the commit `v<ver>` and publishes a GitHub Release with
-  auto-generated notes and the three artifacts attached.
-
-If no commits since the last release warrant a version bump, no release
-is produced. Commit messages therefore drive the entire release: use
-`feat:`, `fix:`, `perf:`, `docs:`, `chore:`, etc.
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, install detection, notifications |
+| [docs/STATE.md](docs/STATE.md) | `/data/adb/firewall_default_deny/` layout |
+| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Supported / unsupported environments |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Logs, diagnostics, common issues |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Building, testing, releases |
 
 ---
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE). No proprietary Google libraries are
-used at build time or at runtime; the dex backend (R8) is itself
-Apache-2.0.
+Apache-2.0 — see [LICENSE](LICENSE).
