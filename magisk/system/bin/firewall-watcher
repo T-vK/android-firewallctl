@@ -255,32 +255,68 @@ notify_apk_path() {
     notify_module_apk
 }
 
+ensure_notify_ready() {
+    if ! pm path "$NOTIFY_APK_COMPONENT" >/dev/null 2>&1; then
+        log "notify: $NOTIFY_APK_COMPONENT not installed (reboot after module update?)"
+        return 1
+    fi
+    pm grant "$NOTIFY_APK_COMPONENT" android.permission.POST_NOTIFICATIONS >>"$LOGFILE" 2>&1         || true
+    return 0
+}
+
+notify_via_activity() {
+    _pkg="$1"
+    _comp="${NOTIFY_APK_COMPONENT}/.PostNotificationActivity"
+    if run_as_notify_apk "$AM" start --user 0 -f 0x10000000             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
+    if "$AM" start --user 0 -f 0x10000000             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+notify_via_service() {
+    _pkg="$1"
+    _comp="${NOTIFY_APK_COMPONENT}/.NotifyService"
+    if run_as_notify_apk "$AM" startservice --user 0             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
+    if "$AM" startservice --user 0             -n "$_comp" --es package "$_pkg" >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
 notify_via_broadcast() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 1
     if [ -x "$CMD" ] && "$CMD" activity broadcast --user 0 \
             -a app.firewall.notify.SHOW_BLOCKED \
             --es package "$_pkg" \
-            -p app.firewall.notify >/dev/null 2>>"$LOGFILE"; then
+            --receiver-foreground \
+            -p app.firewall.notify >>"$LOGFILE" 2>&1; then
         return 0
     fi
     if "$AM" broadcast --user 0 \
             -a app.firewall.notify.SHOW_BLOCKED \
             --es package "$_pkg" \
-            -p app.firewall.notify >/dev/null 2>>"$LOGFILE"; then
+            --receiver-foreground \
+            -p app.firewall.notify >>"$LOGFILE" 2>&1; then
         return 0
     fi
     "$AM" broadcast --user 0 \
         -a app.firewall.notify.SHOW_BLOCKED \
         --es package "$_pkg" \
-        -n "${NOTIFY_APK_COMPONENT}/.NotifyReceiver" >/dev/null 2>>"$LOGFILE"
+        -n "${NOTIFY_APK_COMPONENT}/.NotifyReceiver" >>"$LOGFILE" 2>&1
+    return 1
 }
 
 notify_via_am_direct() {
     _pkg="$1"
     if run_as_notify_apk "$AM" start --user 0 -f 0x10000000 \
             -n "${NOTIFY_APK_COMPONENT}/.PostNotificationActivity" \
-            --es package "$_pkg" >/dev/null 2>>"$LOGFILE"; then
+            --es package "$_pkg" >>"$LOGFILE" 2>&1; then
         return 0
     fi
     "$AM" start --user 0 -f 0x10000000 \
@@ -311,13 +347,20 @@ run_notify_apk_runner() {
 
 notify_user_inner() {
     _pkg="$1"
+    ensure_notify_ready || return 1
+    if notify_via_activity "$_pkg"; then
+        return 0
+    fi
+    if notify_via_service "$_pkg"; then
+        return 0
+    fi
     if notify_via_broadcast "$_pkg"; then
         return 0
     fi
-    if notify_via_am_direct "$_pkg"; then
+    if run_notify_apk_runner "$NOTIFY_RUNNER" "$_pkg"; then
         return 0
     fi
-    run_notify_apk_runner "$NOTIFY_RUNNER" "$_pkg"
+    return 1
 }
 
 notify_user() {
@@ -335,7 +378,6 @@ notify_block_list() {
     [ -s "$_list" ] || return 0
     while IFS= read -r _pkg || [ -n "$_pkg" ]; do
         [ -n "$_pkg" ] || continue
-        should_skip_blocking "$_pkg" && continue
         notify_user "$_pkg"
     done <"$_list"
 }
@@ -667,7 +709,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v34"
+log "firewall-watcher build=memdiff-v35"
 
 start_block_worker
 start_allow_queue_poller

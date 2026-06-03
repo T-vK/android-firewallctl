@@ -11,23 +11,28 @@ public final class NotifyReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (intent == null) {
-            return;
-        }
-        if (!NotifyHelper.ACTION_SHOW_BLOCKED.equals(intent.getAction())) {
-            return;
-        }
-        String pkg = intent.getStringExtra(NotifyHelper.EXTRA_PACKAGE);
-        if (pkg == null || pkg.isEmpty()) {
-            return;
-        }
-        Context app = context.getApplicationContext();
-        String kind = intent.getStringExtra(NotifyHelper.EXTRA_KIND);
-        if (NotifyHelper.KIND_INSTALL_DETECT.equals(kind)) {
-            String when = intent.getStringExtra(NotifyHelper.EXTRA_WHEN);
-            NotifyHelper.showInstallDetected(app, pkg, when);
-        } else {
-            NotifyHelper.showBlocked(app, pkg);
+        final PendingResult pending = goAsync();
+        try {
+            if (intent == null) {
+                return;
+            }
+            if (!NotifyHelper.ACTION_SHOW_BLOCKED.equals(intent.getAction())) {
+                return;
+            }
+            String pkg = intent.getStringExtra(NotifyHelper.EXTRA_PACKAGE);
+            if (pkg == null || pkg.isEmpty()) {
+                return;
+            }
+            Context app = context.getApplicationContext();
+            String kind = intent.getStringExtra(NotifyHelper.EXTRA_KIND);
+            if (NotifyHelper.KIND_INSTALL_DETECT.equals(kind)) {
+                String when = intent.getStringExtra(NotifyHelper.EXTRA_WHEN);
+                NotifyHelper.showInstallDetected(app, pkg, when);
+            } else {
+                NotifyHelper.showBlocked(app, pkg);
+            }
+        } finally {
+            pending.finish();
         }
     }
 }
