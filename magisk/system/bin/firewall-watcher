@@ -897,12 +897,17 @@ establish_baseline_when_ready() {
 
 
 build_inotify_targets() {
-    # Watch package DB files only — never the whole /data/system tree (too noisy).
+    # Watch /data/system dir; callback ignores non-package noise. Survives packages.xml
+    # AtomicFile replace (per-file watches get IN_IGNORED and kill inotifyd).
+    if [ -d "$WATCH_DIR" ]; then
+        printf '%s' "$WATCH_DIR"
+        return 0
+    fi
     _out=""
-    for _f in "$PACKAGES_LIST"         "$WATCH_DIR/packages.xml"         "$WATCH_DIR/packages.xml.new"         "$PACKAGES_LIST.new"; do
+    for _f in "$PACKAGES_LIST" "$WATCH_DIR/packages.xml"; do
         [ -n "$_f" ] || continue
         [ -e "$_f" ] || continue
-        case " $_out " in *" $_f "*) ;; *) _out="$_out $_f" ;; esac
+        _out="$_out $_f"
     done
     printf '%s' "$_out" | sed 's/^ //'
 }
@@ -1029,7 +1034,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v48"
+log "firewall-watcher build=memdiff-v49"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker
@@ -1047,11 +1052,12 @@ if command -v inotifyd >/dev/null 2>&1; then
             run_inotifyd_once
             _irc=$?
             if [ "$_irc" -ne 0 ]; then
-                log "ERROR: inotifyd failed rc=$_irc; retry in 5s (no poll fallback — fix log above)"
+                log "ERROR: inotifyd failed rc=$_irc; retry in 2s (no poll fallback)"
+                sleep 2
             else
-                log "inotifyd: exited rc=0; restarting in 5s"
+                log "inotifyd: all watches ended (normal after packages.xml rewrite); restarting"
+                sleep 0.25
             fi
-            sleep 5
         done
     ) &
     INOTIFY_SUP_PID=$!
@@ -1061,6 +1067,8 @@ else
 fi
 
 while read -r _wake <"$WAKE_FIFO" 2>/dev/null; do
-    [ -n "$_wake" ] && log "wake: $_wake"
+    if [ "${FIREWALL_LOG_ALL_WAKES:-0}" = "1" ] && [ -n "$_wake" ]; then
+        log "wake: $_wake"
+    fi
     handle_package_list_change
 done
