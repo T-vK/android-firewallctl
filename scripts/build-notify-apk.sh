@@ -8,6 +8,7 @@ OUT_DIR="${1:-$ROOT/build}"
 APK_OUT="$OUT_DIR/FirewallNotify.apk"
 STAGE="$OUT_DIR/notify-apk-staging"
 MANIFEST="$ROOT/src/notify/AndroidManifest.xml"
+RES_DIR="$ROOT/src/notify/res"
 SRC_DIR="$ROOT/src/notify/app/firewall/notify"
 
 SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -59,9 +60,10 @@ fi
 "$D8" --min-api 26 --output "$STAGE" "${CLASS_FILES[@]}"
 rm -rf "$STAGE/classes"
 
-echo "  AAPT     package manifest"
+echo "  AAPT     package manifest + resources"
 "$AAPT" package -f \
     -M "$MANIFEST" \
+    -S "$RES_DIR" \
     -I "$PLATFORM_JAR" \
     -F "$STAGE/unsigned.apk"
 

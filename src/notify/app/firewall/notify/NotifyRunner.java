@@ -41,6 +41,10 @@ public final class NotifyRunner {
                 System.out.println("NotifyRunner: install_detect posted for " + args[0]);
             } else {
                 NotifyHelper.showBlocked(ctx, args[0]);
+                if (!NotifyHelper.isBlockedNotificationActive(nm, args[0])) {
+                    System.err.println("NotifyRunner: notify dropped (not in active set; check icon/channel)");
+                    System.exit(1);
+                }
                 System.out.println("NotifyRunner: posted for " + args[0]);
             }
             System.exit(0);

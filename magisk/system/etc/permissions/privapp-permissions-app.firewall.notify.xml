@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Priv-app permissions for Magisk-overlayed FirewallNotify (POST_NOTIFICATIONS is still granted at runtime). -->
+<permissions>
+    <privapp-permissions package="app.firewall.notify">
+        <permission name="android.permission.POST_NOTIFICATIONS" />
+        <permission name="android.permission.INTERACT_ACROSS_USERS" />
+    </privapp-permissions>
+</permissions>

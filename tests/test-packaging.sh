@@ -60,7 +60,8 @@ if [ -n "$ZIP" ] && [ -f "$ZIP" ]; then
         system/bin/firewallctl system/bin/firewallctl.dex.jar \
         system/bin/firewall-watcher system/bin/firewall-allow-app \
         system/priv-app/FirewallNotify/FirewallNotify.apk \
-        FirewallNotify.apk
+        FirewallNotify.apk \
+        system/etc/permissions/privapp-permissions-app.firewall.notify.xml
     do
         assert "magisk zip contains $required" \
             "echo \"\$entries\" | grep -qFx '$required'"

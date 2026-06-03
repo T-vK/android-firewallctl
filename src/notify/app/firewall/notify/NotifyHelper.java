@@ -27,11 +27,42 @@ public final class NotifyHelper {
     public static final String KIND_INSTALL_DETECT = "install_detect";
 
     /** v2 channel: heads-up, sound, bypass DND; user may need to re-enable after upgrade. */
-    private static final String CHANNEL_ID = "firewall_block_alert_v2";
+    private static final String CHANNEL_ID = "firewall_block_alert_v3";
     private static final String CHANNEL_NAME = "New app blocked (urgent)";
-    private static final int NOTIFICATION_ID = 0x464444;
+    public static final int NOTIFICATION_ID = 0x464444;
     private static final int INSTALL_DETECT_NOTIFICATION_ID = 0x464445;
     private static final int FLAG_IMMUTABLE = 0x04000000;
+
+
+    private static int smallIcon(Context context) {
+        int id = context.getResources().getIdentifier(
+                "ic_stat_notify", "drawable", context.getPackageName());
+        if (id != 0) {
+            return id;
+        }
+        int appIcon = context.getApplicationInfo().icon;
+        if (appIcon != 0) {
+            return appIcon;
+        }
+        return android.R.drawable.ic_dialog_info;
+    }
+
+    /** True if our block notification is in the active set (posted, not dropped). */
+    public static boolean isBlockedNotificationActive(NotificationManager nm, String pkg) {
+        if (nm == null || pkg == null || pkg.isEmpty()) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true;
+        }
+        String tag = notificationTag(pkg);
+        for (android.service.notification.StatusBarNotification n : nm.getActiveNotifications()) {
+            if (n.getId() == NOTIFICATION_ID && tag.equals(n.getTag())) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private NotifyHelper() {
     }
@@ -52,10 +83,7 @@ public final class NotifyHelper {
         String text = label + " — network access was disabled by default.";
         String tag = notificationTag(pkg);
 
-        int iconId = android.R.drawable.stat_sys_warning;
-        if (iconId == 0) {
-            iconId = android.R.drawable.ic_dialog_alert;
-        }
+        int iconId = smallIcon(context);
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
         PendingIntent settingsPi = PendingIntent.getActivity(
@@ -77,8 +105,8 @@ public final class NotifyHelper {
                 .setOnlyAlertOnce(false)
                 .setDefaults(Notification.DEFAULT_ALL)
                 .setContentIntent(settingsPi)
-                .addAction(new Notification.Action.Builder(0, "Allow network", allowPi).build())
-                .addAction(new Notification.Action.Builder(0, "Network settings", settingsPi)
+                .addAction(new Notification.Action.Builder(iconId, "Allow network", allowPi).build())
+                .addAction(new Notification.Action.Builder(iconId, "Network settings", settingsPi)
                         .build());
 
         try {
@@ -108,10 +136,7 @@ public final class NotifyHelper {
         String text = time.isEmpty() ? label : time + " - " + label;
         String tag = "install_detect_" + pkg;
 
-        int iconId = android.R.drawable.stat_notify_more;
-        if (iconId == 0) {
-            iconId = android.R.drawable.ic_dialog_alert;
-        }
+        int iconId = smallIcon(context);
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
         Intent details = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
