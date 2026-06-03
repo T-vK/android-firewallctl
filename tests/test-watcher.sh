@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 # Functional tests for magisk/system/bin/firewall-watcher.
-#
-# Strategy: build an isolated PATH with stub `pm`, `firewallctl`, `cmd`
-# binaries that read/record from files in a temp state dir, then drive the
-# watcher in --reconcile mode and inspect side effects.
 
 set -u
 
 : "${PROJECT_DIR:=$(cd "$(dirname "$0")/.." && pwd)}"
-# The watcher uses an Android shebang (#!/system/bin/sh) which doesn't
-# exist on Linux. Invoke via /bin/sh so the tests are host-portable.
 WATCHER="$PROJECT_DIR/magisk/system/bin/firewall-watcher"
 run_watcher() { sh "$WATCHER" "$@"; }
 
@@ -19,13 +13,24 @@ trap 'rm -rf "$TMP"' EXIT
 STATE="$TMP/state"
 STUBS="$TMP/bin"
 PM_LIST="$TMP/pm-output"
+PACKAGES_LIST="$TMP/packages.list"
 NOTIFY_APK="$TMP/FirewallNotify.apk"
 mkdir -p "$STATE" "$STUBS"
 touch "$NOTIFY_APK"
 
+# packages.list: "pkgname uid flags..."
+write_packages_list() {
+    : >"$PACKAGES_LIST"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        pkg=${line%% *}
+        uid=${line#* }
+        printf '%s %s 0\n' "$pkg" "$uid" >>"$PACKAGES_LIST"
+    done
+}
+
 cat > "$STUBS/pm" <<EOF
 #!/usr/bin/env bash
-# Pretends to be Android's pm.
 if [ "\$1" = "list" ] && [ "\$2" = "packages" ]; then
     if [ -n "\$3" ] && [ "\$3" != "-3" ]; then
         grep -Fx "package:\$3" "$PM_LIST" 2>/dev/null || true
@@ -55,8 +60,8 @@ EOF
 chmod +x "$STUBS"/pm "$STUBS"/firewallctl "$STUBS"/cmd "$STUBS"/app_process
 
 export FIREWALL_STATE_DIR="$STATE"
+export FIREWALL_PACKAGES_LIST="$PACKAGES_LIST"
 export FIREWALLCTL="$STUBS/firewallctl"
-export FIREWALL_INSTALL_SETTLE_SEC=0
 export PATH="$STUBS:$PATH"
 
 fail=0
@@ -72,17 +77,27 @@ cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
 package:com.example.existing.b
 EOF
-rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/cmd.log" "$TMP/notify.log" "$TMP/app_process.log"
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.existing.b 10002
+EOF
+rm -f "$STATE"/* "$TMP/firewallctl.log" "$TMP/cmd.log" "$TMP/notify.log"
 run_watcher --reconcile
 assert "T1: snapshot created" "[ -f '$STATE/known.txt' ]"
-assert "T1: snapshot has 2 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 2 ]"
+assert "T1: snapshot has 2 uid records" "[ \$(wc -l < '$STATE/known.txt') -eq 2 ]"
+assert "T1: snapshot stores uid" "grep -qF 'com.example.existing.a 10001' '$STATE/known.txt'"
 assert "T1: firewallctl NOT invoked on first run" "[ ! -f '$TMP/firewallctl.log' ]"
 
-# ---- T2: new package is blocked ----
+# ---- T2: new package is blocked and notified immediately ----
 cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
 package:com.example.existing.b
 package:com.example.new.app
+EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.existing.b 10002
+com.example.new.app 10003
 EOF
 export FIREWALL_NOTIFY_CMD="$STUBS/firewall-notify"
 cat > "$STUBS/firewall-notify" <<EOF
@@ -91,18 +106,24 @@ echo "notify-blocked \$@" >> "$TMP/notify.log"
 EOF
 chmod +x "$STUBS/firewall-notify"
 run_watcher --reconcile
-sleep 1
 assert "T2: firewallctl was invoked" "[ -f '$TMP/firewallctl.log' ]"
 assert "T2: firewallctl set +REJECT_ALL on new pkg" \
     "grep -qF 'set com.example.new.app +REJECT_ALL' '$TMP/firewallctl.log'"
 assert "T2: notification requested" \
     "grep -qF 'notify-blocked com.example.new.app' '$TMP/notify.log'"
-assert "T2: snapshot now has 3 entries" "[ \$(wc -l < '$STATE/known.txt') -eq 3 ]"
+assert "T2: snapshot has uid record for new app" \
+    "grep -qF 'com.example.new.app 10003' '$STATE/known.txt'"
 
 # ---- T3: allowlisted package is skipped ----
 echo "com.example.exempt" > "$STATE/allowlist.txt"
 cat >> "$PM_LIST" <<EOF
 package:com.example.exempt
+EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.existing.b 10002
+com.example.new.app 10003
+com.example.exempt 10004
 EOF
 rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
 run_watcher --reconcile
@@ -116,6 +137,13 @@ rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
 cat >> "$PM_LIST" <<EOF
 package:com.example.another
 EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.existing.b 10002
+com.example.new.app 10003
+com.example.exempt 10004
+com.example.another 10005
+EOF
 run_watcher "c" "/data/system" "unrelated.xml"
 assert "T4: non-packages.xml event ignored" \
     "[ ! -f '$TMP/firewallctl.log' ]"
@@ -123,7 +151,7 @@ run_watcher "c" "/data/system" "packages.xml"
 assert "T4: packages.xml event triggered reconcile" \
     "grep -qF 'set com.example.another +REJECT_ALL' '$TMP/firewallctl.log'"
 
-# ---- T5: stale lock from prior crash blocks reconcile ----
+# ---- T5: stale lock blocks reconcile ----
 mkdir -p "$STATE/reconcile.lock"
 rm -f "$TMP/firewallctl.log"
 run_watcher --reconcile
@@ -131,29 +159,49 @@ assert "T5: stale lock blocks reconcile (expected)" \
     "[ ! -f '$TMP/firewallctl.log' ]"
 rmdir "$STATE/reconcile.lock"
 
-# ---- T6: uninstall then reinstall is detected as a new install ----
+# ---- T6: reinstall with new UID is blocked again ----
 unset FIREWALL_NOTIFY_CMD
 export FIREWALL_NOTIFY_CMD="$STUBS/firewall-notify"
 rm -f "$TMP/notify.log" "$TMP/firewallctl.log"
 cat > "$PM_LIST" <<EOF
 package:com.example.existing.a
+package:com.example.reinstall.me
 EOF
-printf 'com.example.existing.a\ncom.example.reinstall.me\n' > "$STATE/known.txt"
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.reinstall.me 20010
+EOF
+printf 'com.example.existing.a 10001\ncom.example.reinstall.me 10010\n' > "$STATE/known.txt"
 run_watcher --reconcile
-assert "T6a: snapshot pruned after uninstall" \
-    "[ \$(wc -l < '$STATE/known.txt') -eq 1 ]"
-assert "T6a: pruned pkg not in snapshot" \
-    "! grep -qxF 'com.example.reinstall.me' '$STATE/known.txt'"
+assert "T6: reinstall detected via uid change" \
+    "grep -qF 'set com.example.reinstall.me +REJECT_ALL' '$TMP/firewallctl.log'"
+assert "T6: reinstall notification" \
+    "grep -qF 'notify-blocked com.example.reinstall.me' '$TMP/notify.log'"
+assert "T6: snapshot updated to new uid" \
+    "grep -qF 'com.example.reinstall.me 20010' '$STATE/known.txt'"
 
+# ---- T7: uninstall prunes snapshot; reinstall blocks ----
+rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
+cat > "$PM_LIST" <<EOF
+package:com.example.existing.a
+EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+EOF
+printf 'com.example.existing.a 10001\ncom.example.reinstall.me 20010\n' > "$STATE/known.txt"
+run_watcher --reconcile
+assert "T7a: uninstalled pkg pruned from snapshot" \
+    "! grep -qF 'com.example.reinstall.me' '$STATE/known.txt'"
 cat >> "$PM_LIST" <<EOF
 package:com.example.reinstall.me
 EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.reinstall.me 30020
+EOF
 rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
 run_watcher --reconcile
-sleep 1
-assert "T6b: reinstall triggered block" \
+assert "T7b: fresh install after uninstall blocked" \
     "grep -qF 'set com.example.reinstall.me +REJECT_ALL' '$TMP/firewallctl.log'"
-assert "T6c: reinstall triggered notification" \
-    "grep -qF 'notify-blocked com.example.reinstall.me' '$TMP/notify.log'"
 
 exit "$fail"
