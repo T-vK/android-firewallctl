@@ -1,5 +1,5 @@
 /*
- * Request allow via root watcher (FIFO wake, no su from the system app).
+ * Request allow via root watcher (queue wake, no su from the system app).
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
@@ -19,6 +19,8 @@ final class AllowHelper {
 
     private static final String TAG = "FirewallNotify";
 
+    static final String COMPLETE_MARKER_NAME = "firewall_allow_complete";
+
     private static final String ALLOW_FIFO =
             "/data/local/tmp/firewall_default_deny_allow.fifo";
 
@@ -27,9 +29,23 @@ final class AllowHelper {
     private static final String QUEUE_STATE =
             "/data/adb/firewall_default_deny/allow_queue";
 
-    private static final int ALLOW_WAIT_MS = 10000;
+    private static final int ALLOW_WAIT_MS = 15000;
 
     private AllowHelper() {
+    }
+
+    static File completeMarkerFile(Context ctx) {
+        if (ctx == null) {
+            return null;
+        }
+        return new File(ctx.getCacheDir(), COMPLETE_MARKER_NAME);
+    }
+
+    static void clearCompleteMarker(Context ctx) {
+        File marker = completeMarkerFile(ctx);
+        if (marker != null && marker.exists()) {
+            marker.delete();
+        }
     }
 
     /** Queue allow to root watcher; returns true when watcher confirms success. */
@@ -37,15 +53,16 @@ final class AllowHelper {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
+        clearCompleteMarker(ctx);
         BroadcastReceiver receiver = registerAllowReceiver(ctx, pkg);
         try {
             AllowCompleteReceiver.beginWait(pkg);
-            boolean queued = writeFifo(pkg) || appendQueue(pkg);
+            boolean queued = appendQueue(pkg) || writeFifo(pkg);
             if (!queued) {
                 AllowCompleteReceiver.clear();
                 return runAllowAsRoot(pkg);
             }
-            return AllowCompleteReceiver.awaitComplete(pkg, ALLOW_WAIT_MS);
+            return AllowCompleteReceiver.awaitComplete(ctx, pkg, ALLOW_WAIT_MS);
         } finally {
             unregisterAllowReceiver(ctx, receiver);
         }

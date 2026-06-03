@@ -114,6 +114,40 @@ fi
 notify_apk_path() {
     "$PM" path "$NOTIFY_APK_COMPONENT" 2>/dev/null | head -1 | sed 's/^package://'
 }
+notify_apk_data_dir() {
+    if [ -d "/data/user/0/$NOTIFY_APK_COMPONENT" ]; then
+        echo "/data/user/0/$NOTIFY_APK_COMPONENT"
+        return 0
+    fi
+    if [ -d "/data/data/$NOTIFY_APK_COMPONENT" ]; then
+        echo "/data/data/$NOTIFY_APK_COMPONENT"
+        return 0
+    fi
+    return 1
+}
+
+notify_allow_complete_cache() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    _base=$(notify_apk_data_dir) || return 1
+    _cache="$_base/cache"
+    _marker="$_cache/firewall_allow_complete"
+    mkdir -p "$_cache" 2>/dev/null || return 1
+    printf '%s\n' "$_pkg" > "$_marker"
+    _uid=$("$PM" list packages -U "$NOTIFY_APK_COMPONENT" 2>/dev/null         | sed -n 's/.*uid:\([0-9]*\).*/\1/p' | head -1)
+    if [ -n "$_uid" ]; then
+        chown "$_uid:$_uid" "$_marker" 2>/dev/null             || chown "$_uid" "$_marker" 2>/dev/null || true
+    fi
+    chmod 640 "$_marker" 2>/dev/null || true
+    return 0
+}
+
+notify_allow_complete_activity() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    "$AM" start --user 0         -n "${NOTIFY_APK_COMPONENT}/.AllowCompleteActivity"         --es package "$_pkg"         -f 0x10000000 >>"$LOGFILE" 2>&1
+}
+
 
 run_notify_apk_runner() {
     _runner="$1"
@@ -196,11 +230,23 @@ notify_user() {
 
 notify_allow_complete() {
     _pkg="$1"
+    _rc=1
     if [ -z "$_pkg" ]; then
         return 1
     fi
+    if notify_allow_complete_cache "$_pkg"; then
+        log "allow: cache marker for $_pkg"
+        _rc=0
+    fi
+    if notify_allow_complete_activity "$_pkg"; then
+        log "allow: activity ALLOW_COMPLETE for $_pkg"
+        return 0
+    fi
     if run_notify_apk_runner "$ALLOW_COMPLETE_RUNNER" "$_pkg"; then
         log "allow: app_process ALLOW_COMPLETE for $_pkg"
+        return 0
+    fi
+    if [ "$_rc" -eq 0 ]; then
         return 0
     fi
     if [ -x "$CMD" ] && "$CMD" activity broadcast --user 0 \
@@ -259,9 +305,20 @@ process_allow_queue() {
     rmdir "$_lock" 2>/dev/null
 }
 
+start_allow_queue_poller() {
+    (
+        while true; do
+            process_allow_queue
+            sleep 1
+        done
+    ) &
+    ALLOW_QUEUE_PID=$!
+}
+
 start_allow_fifo_reader() {
     (
         while true; do
+            process_allow_queue
             if [ ! -p "$ALLOW_FIFO" ]; then
                 rm -f "$ALLOW_FIFO" 2>/dev/null || true
                 mkfifo "$ALLOW_FIFO" 2>/dev/null || true
@@ -389,7 +446,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v14"
+log "firewall-watcher build=notify-apk-v15"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
@@ -399,6 +456,7 @@ fi
 
 reconcile
 process_allow_queue
+start_allow_queue_poller
 start_allow_fifo_reader
 
 (
