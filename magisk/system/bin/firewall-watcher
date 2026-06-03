@@ -437,6 +437,7 @@ fi
 rmdir "$LOCK" 2>/dev/null
 
 cleanup() {
+    [ -n "$ALLOW_QUEUE_PID" ] && kill "$ALLOW_QUEUE_PID" 2>/dev/null
     [ -n "$ALLOW_FIFO_PID" ] && kill "$ALLOW_FIFO_PID" 2>/dev/null
     [ -n "$INOTIFY_SUP_PID" ] && kill "$INOTIFY_SUP_PID" 2>/dev/null
     rmdir "$LOCK" 2>/dev/null
