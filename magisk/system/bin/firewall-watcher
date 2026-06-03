@@ -24,9 +24,13 @@ INSTALL_SETTLE_SEC="${FIREWALL_INSTALL_SETTLE_SEC:-15}"
 mkdir -p "$STATE_DIR"
 ALLOW_QUEUE="$STATE_DIR/allow_queue"
 ALLOW_QUEUE_LOCAL="/data/local/tmp/firewall_default_deny_allow"
+ALLOW_FIFO="/data/local/tmp/firewall_default_deny_allow.fifo"
 touch "$ALLOWLIST"
 touch "$ALLOW_QUEUE" "$ALLOW_QUEUE_LOCAL" 2>/dev/null || true
 chmod 0666 "$ALLOW_QUEUE" "$ALLOW_QUEUE_LOCAL" 2>/dev/null || true
+rm -f "$ALLOW_FIFO" 2>/dev/null || true
+mkfifo "$ALLOW_FIFO" 2>/dev/null || true
+chmod 0666 "$ALLOW_FIFO" 2>/dev/null || true
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
@@ -180,6 +184,21 @@ notify_user() {
 }
 
 
+allow_one_package() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    if [ ! -x /system/bin/firewall-allow-app ]; then
+        log "allow: missing /system/bin/firewall-allow-app"
+        return 1
+    fi
+    if /system/bin/firewall-allow-app "$_pkg" >>"$LOGFILE" 2>&1; then
+        log "allow: allowed $_pkg"
+        return 0
+    fi
+    log "allow: firewall-allow-app failed for $_pkg"
+    return 1
+}
+
 process_allow_queue() {
     _lock="$STATE_DIR/allow_queue.lock"
     if ! mkdir "$_lock" 2>/dev/null; then
@@ -190,20 +209,29 @@ process_allow_queue() {
             continue
         fi
         while IFS= read -r _pkg || [ -n "$_pkg" ]; do
-            [ -n "$_pkg" ] || continue
-            if [ -x /system/bin/firewall-allow-app ]; then
-                if /system/bin/firewall-allow-app "$_pkg" >>"$LOGFILE" 2>&1; then
-                    log "allow_queue: allowed $_pkg"
-                else
-                    log "allow_queue: firewall-allow-app failed for $_pkg"
-                fi
-            else
-                log "allow_queue: missing /system/bin/firewall-allow-app"
-            fi
+            allow_one_package "$_pkg"
         done <"$_q"
         : >"$_q"
     done
     rmdir "$_lock" 2>/dev/null
+}
+
+start_allow_fifo_reader() {
+    (
+        while true; do
+            if [ ! -p "$ALLOW_FIFO" ]; then
+                rm -f "$ALLOW_FIFO" 2>/dev/null || true
+                mkfifo "$ALLOW_FIFO" 2>/dev/null || true
+                chmod 0666 "$ALLOW_FIFO" 2>/dev/null || true
+                sleep 1
+                continue
+            fi
+            if read -r _pkg <"$ALLOW_FIFO" 2>/dev/null; then
+                allow_one_package "$_pkg"
+            fi
+        done
+    ) &
+    ALLOW_FIFO_PID=$!
 }
 
 
@@ -259,6 +287,17 @@ reconcile() {
     rmdir "$LOCK" 2>/dev/null
 }
 
+is_allow_queue_event() {
+    for arg in "$@"; do
+        case "$arg" in
+            allow_queue|firewall_default_deny_allow|*/allow_queue|*/firewall_default_deny_allow*)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 is_package_db_event() {
     for arg in "$@"; do
         case "$arg" in
@@ -280,6 +319,8 @@ case "$1" in
     *)
         if is_package_db_event "$@"; then
             reconcile
+        elif is_allow_queue_event "$@"; then
+            process_allow_queue
         fi
         exit 0
         ;;
@@ -296,7 +337,7 @@ fi
 rmdir "$LOCK" 2>/dev/null
 
 cleanup() {
-    [ -n "$ALLOW_POLL_PID" ] && kill "$ALLOW_POLL_PID" 2>/dev/null
+    [ -n "$ALLOW_FIFO_PID" ] && kill "$ALLOW_FIFO_PID" 2>/dev/null
     [ -n "$INOTIFY_SUP_PID" ] && kill "$INOTIFY_SUP_PID" 2>/dev/null
     rmdir "$LOCK" 2>/dev/null
     rmdir "$STATE_DIR/allow_queue.lock" 2>/dev/null
@@ -305,28 +346,26 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v10"
+log "firewall-watcher build=notify-apk-v11"
 
 if command -v inotifyd >/dev/null 2>&1; then
-    log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"
+    log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
 else
     log "watcher starting (inotifyd MISSING, safety poll ${SAFETY_INTERVAL}s only)"
 fi
 
 reconcile
-
-(
-    while true; do
-        process_allow_queue
-        sleep 2
-    done
-) &
-ALLOW_POLL_PID=$!
+process_allow_queue
+start_allow_fifo_reader
 
 (
     while true; do
         if command -v inotifyd >/dev/null 2>&1; then
-            inotifyd "$0" "$WATCH_DIR" 2>>"$LOGFILE"
+            _targets="$WATCH_DIR"
+            [ -e "$ALLOW_QUEUE_LOCAL" ] && _targets="$_targets $ALLOW_QUEUE_LOCAL:w"
+            [ -e "$ALLOW_QUEUE" ] && _targets="$_targets $ALLOW_QUEUE:w"
+            # shellcheck disable=SC2086
+            inotifyd "$0" $_targets 2>>"$LOGFILE"
             log "inotifyd exited rc=$?, restarting in 5s"
             sleep 5
         else

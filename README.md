@@ -194,8 +194,8 @@ used at build time or at runtime; the dex backend (R8) is itself
 Apache-2.0.
 
 
-**Allow network** on the notification does not call Magisk su from the app (you
-will not get a superuser prompt for Firewall Notify). It queues the package for
-the root **firewall-watcher**, which runs `firewall-allow-app` within a few
-seconds.
+**Allow network** does not call Magisk su from the app (no superuser prompt).
+It writes the package name into a named pipe; **firewall-watcher** wakes
+immediately and runs `firewall-allow-app` as root. A file-queue + inotify path
+exists only as fallback.
 

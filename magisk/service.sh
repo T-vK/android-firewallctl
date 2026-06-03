@@ -26,6 +26,9 @@ done
 
 touch "$STATE_DIR/allow_queue" /data/local/tmp/firewall_default_deny_allow 2>/dev/null || true
 chmod 0666 "$STATE_DIR/allow_queue" /data/local/tmp/firewall_default_deny_allow 2>/dev/null || true
+rm -f /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
+mkfifo /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
+chmod 0666 /data/local/tmp/firewall_default_deny_allow.fifo 2>/dev/null || true
 
 if pm path app.firewall.notify >/dev/null 2>&1; then
     pm grant app.firewall.notify android.permission.POST_NOTIFICATIONS 2>/dev/null || true
