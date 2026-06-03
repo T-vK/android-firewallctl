@@ -13,6 +13,7 @@
 
 STATE_DIR="${FIREWALL_STATE_DIR:-/data/adb/firewall_default_deny}"
 SNAPSHOT="$STATE_DIR/known.txt"
+RECENT_UNINSTALL="$STATE_DIR/recent_uninstalled"
 ALLOWLIST="$STATE_DIR/allowlist.txt"
 LOGFILE="$STATE_DIR/watcher.log"
 LOCK="$STATE_DIR/reconcile.lock"
@@ -111,9 +112,39 @@ snapshot_uid_for_pkg() {
     grep -m1 "^${_pkg} " "$SNAPSHOT" 2>/dev/null | awk '{print $2}'
 }
 
-# Block only: brand-new package name, or same name after reinstall (uid changed).
+pkg_has_reject_all() {
+    _pkg="$1"
+    _out=$(run_firewallctl get "$_pkg" 2>/dev/null) || return 1
+    echo "$_out" | grep -q 'POLICY_REJECT_ALL'
+}
+
+note_uninstalled_pkg() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 0
+    grep -qxF "$_pkg" "$RECENT_UNINSTALL" 2>/dev/null && return 0
+    printf '%s\n' "$_pkg" >>"$RECENT_UNINSTALL"
+}
+
+clear_uninstalled_pkg() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 0
+    [ ! -f "$RECENT_UNINSTALL" ] && return 0
+    _t="$STATE_DIR/.recent_uninstall_tmp"
+    grep -vxF "$_pkg" "$RECENT_UNINSTALL" 2>/dev/null >"$_t" || : >"$_t"
+    mv "$_t" "$RECENT_UNINSTALL"
+}
+
+was_recently_uninstalled() {
+    _pkg="$1"
+    grep -qxF "$_pkg" "$RECENT_UNINSTALL" 2>/dev/null
+}
+
+# Block: new name, reinstall, or snapshot entry without active REJECT_ALL.
 should_block_pkg() {
     _pkg="$1"
+    if was_recently_uninstalled "$_pkg"; then
+        return 0
+    fi
     if ! snapshot_has_pkg "$_pkg"; then
         return 0
     fi
@@ -122,7 +153,19 @@ should_block_pkg() {
     if [ -n "$_newuid" ] && [ -n "$_olduid" ] && [ "$_newuid" != "$_olduid" ]; then
         return 0
     fi
-    return 1
+    if [ -n "$_newuid" ] && [ -z "$_olduid" ] && grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null; then
+        return 0
+    fi
+    if [ -z "$_newuid" ]; then
+        return 1
+    fi
+    if [ -z "$_olduid" ]; then
+        return 0
+    fi
+    if pkg_has_reject_all "$_pkg"; then
+        return 1
+    fi
+    return 0
 }
 
 record_snapshot_pkg() {
@@ -154,7 +197,11 @@ prune_uninstalled_from_snapshot() {
     while IFS= read -r _row || [ -n "$_row" ]; do
         [ -z "$_row" ] && continue
         _pkg=${_row%% *}
-        grep -qxF "$_pkg" "$_cur" 2>/dev/null && printf '%s\n' "$_row"
+        if grep -qxF "$_pkg" "$_cur" 2>/dev/null; then
+            printf '%s\n' "$_row"
+        else
+            note_uninstalled_pkg "$_pkg"
+        fi
     done <"$SNAPSHOT" >"$_tmp" 2>/dev/null || : >"$_tmp"
     mv "$_tmp" "$SNAPSHOT"
     rm -f "$_cur"
@@ -336,19 +383,17 @@ notify_via_am_direct() {
 
 notify_user_inner() {
     pkg="$1"
-    if notify_via_app_process "$pkg"; then
-        log "notify: app_process posted for $pkg"
+    if notify_via_am_direct "$pkg"; then
+        log "notify: am posted for $pkg"
         return 0
     fi
     if notify_shell_cmd "$pkg"; then
         log "notify: cmd notification posted for $pkg"
         return 0
     fi
-    if [ -n "$(notify_apk_path)" ]; then
-        if notify_via_am_direct "$pkg"; then
-            log "notify: am started for $pkg"
-            return 0
-        fi
+    if notify_via_app_process "$pkg"; then
+        log "notify: app_process posted for $pkg"
+        return 0
     fi
     log "ERROR: all notify paths failed for $pkg"
     return 1
@@ -519,6 +564,7 @@ apply_deny() {
     pkg="$1"
     if is_allowlisted "$pkg"; then
         log "skip $pkg (allowlisted)"
+        clear_uninstalled_pkg "$pkg"
         record_snapshot_pkg "$pkg"
         return 0
     fi
@@ -526,6 +572,7 @@ apply_deny() {
     # stricter pm filter (breaks on LineageOS for valid third-party installs).
     if run_firewallctl set "$pkg" +REJECT_ALL >> "$LOGFILE" 2>&1; then
         log "blocked $pkg"
+        clear_uninstalled_pkg "$pkg"
         notify_user "$pkg"
         return 0
     fi
@@ -679,7 +726,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v24"
+log "firewall-watcher build=notify-apk-v25"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"

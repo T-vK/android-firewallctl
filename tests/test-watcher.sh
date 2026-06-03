@@ -32,7 +32,10 @@ write_packages_list() {
 cat > "$STUBS/pm" <<EOF
 #!/usr/bin/env bash
 if [ "\$1" = "list" ] && [ "\$2" = "packages" ]; then
-    if [ -n "\$3" ] && [ "\$3" != "-3" ]; then
+    if [ "\$3" = "-U" ] && [ -n "\$4" ]; then
+        _u=\$(grep -F " \$4 " "$PACKAGES_LIST" 2>/dev/null | awk '{print \$2}')
+        [ -n "\$_u" ] && echo "package:\$4 uid:\$_u"
+    elif [ -n "\$3" ] && [ "\$3" != "-3" ]; then
         grep -Fx "package:\$3" "$PM_LIST" 2>/dev/null || true
     else
         cat "$PM_LIST" 2>/dev/null || true
@@ -44,9 +47,22 @@ if [ "\$1" = "path" ]; then
     esac
 fi
 EOF
+BLOCKED_LIST="$STATE/blocked.list"
 cat > "$STUBS/firewallctl" <<EOF
 #!/usr/bin/env bash
 echo "\$@" >> "$TMP/firewallctl.log"
+if [ "\$1" = "get" ] && [ -n "\$2" ]; then
+    if grep -qxF "\$2" "$BLOCKED_LIST" 2>/dev/null; then
+        echo "uid=0  policy=0x1  flags=[POLICY_REJECT_ALL]"
+    else
+        echo "uid=0  policy=0x0  flags=[POLICY_NONE]"
+    fi
+    exit 0
+fi
+if [ "\$1" = "set" ] && [ "\$3" = "+REJECT_ALL" ]; then
+    echo "\$2" >> "$BLOCKED_LIST"
+fi
+exit 0
 EOF
 cat > "$STUBS/cmd" <<EOF
 #!/usr/bin/env bash
@@ -204,8 +220,6 @@ run_watcher --reconcile
 assert "T7b: fresh install after uninstall blocked" \
     "grep -qF 'set com.example.reinstall.me +REJECT_ALL' '$TMP/firewallctl.log'"
 
-exit "$fail"
-
 # ---- T8: empty/missing snapshot must not mass-block existing apps ----
 rm -f "$STATE/known.txt" "$TMP/firewallctl.log" "$TMP/notify.log"
 cat > "$PM_LIST" <<EOF2
@@ -240,3 +254,35 @@ assert "T8: bootstrap does not invoke firewallctl" "[ ! -f '$TMP/firewallctl.log
 assert "T8: bootstrap logged" "grep -qF 'bootstrap snapshot:' '$STATE/watcher.log'"
 assert "T8: snapshot lists all installed apps" "[ \$(wc -l < '$STATE/known.txt') -eq 11 ]"
 
+# ---- T9: fast reinstall via recent_uninstalled list ----
+rm -f "$STATE/known.txt" "$STATE/recent_uninstalled" "$TMP/firewallctl.log" "$BLOCKED_LIST"
+cat > "$PM_LIST" <<EOF
+package:com.example.existing.a
+EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+EOF
+printf 'com.example.existing.a 10001\ncom.example.fast.reinstall 10099\n' > "$STATE/known.txt"
+run_watcher --reconcile
+assert "T9a: stale snapshot row pruned" "! grep -qF 'com.example.fast.reinstall' '$STATE/known.txt'"
+assert "T9b: uninstall recorded" "grep -qxF 'com.example.fast.reinstall' '$STATE/recent_uninstalled'"
+cat > "$PM_LIST" <<EOF
+package:com.example.existing.a
+package:com.example.fast.reinstall
+EOF
+write_packages_list <<EOF
+com.example.existing.a 10001
+com.example.fast.reinstall 10100
+EOF
+rm -f "$TMP/firewallctl.log" "$TMP/notify.log"
+run_watcher --reconcile
+assert "T9c: fast reinstall blocked" "grep -qF 'set com.example.fast.reinstall +REJECT_ALL' '$TMP/firewallctl.log'"
+
+# ---- T10: known app with REJECT_ALL is not blocked again ----
+rm -f "$TMP/firewallctl.log"
+echo "com.example.existing.a" >> "$BLOCKED_LIST"
+run_watcher --reconcile
+assert "T10: already-blocked app not set again" "! grep -cF 'set com.example.existing.a +REJECT_ALL' '$TMP/firewallctl.log' | grep -qv '^0$' 2>/dev/null || [ \$(grep -cF 'set com.example.existing.a +REJECT_ALL' '$TMP/firewallctl.log' 2>/dev/null || echo 0) -eq 0 ]"
+
+
+exit "$fail"
