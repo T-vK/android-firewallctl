@@ -35,6 +35,19 @@ chmod 0666 "$ALLOW_FIFO" 2>/dev/null || true
 touch "$ALLOW_DONE" 2>/dev/null || true
 chmod 0666 "$ALLOW_DONE" 2>/dev/null || true
 
+# Android tool paths (must exist before --reconcile / inotify callbacks).
+if [ -x /system/bin/pm ]; then
+    AM=/system/bin/am
+    PM=/system/bin/pm
+    CMD=/system/bin/cmd
+    APP_PROCESS=/system/bin/app_process
+else
+    AM=am
+    PM=pm
+    CMD=cmd
+    APP_PROCESS=app_process
+fi
+
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
 }
@@ -60,30 +73,89 @@ is_allowlisted() {
 
 PACKAGES_LIST="${FIREWALL_PACKAGES_LIST:-/data/system/packages.list}"
 
+current_packages() {
+    "$PM" list packages -3 2>/dev/null | sed 's/^package://' | sort -u
+}
+
 package_uid() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 1
+    _uid=$("$PM" list packages -U "$_pkg" 2>/dev/null \
+        | sed -n 's/.*uid:\([0-9][0-9]*\).*/\1/p' | head -1)
+    if [ -n "$_uid" ]; then
+        printf '%s' "$_uid"
+        return 0
+    fi
     [ -r "$PACKAGES_LIST" ] || return 1
     awk -v p="$_pkg" '$1 == p { print $2; exit }' "$PACKAGES_LIST" 2>/dev/null
 }
 
-# One line per installed user app: "package.name uid"
-current_records() {
-    pm list packages -3 2>/dev/null | sed 's/^package://' | while IFS= read -r _pkg; do
-        [ -n "$_pkg" ] || continue
-        _uid=$(package_uid "$_pkg")
-        [ -n "$_uid" ] || continue
-        printf '%s %s
-' "$_pkg" "$_uid"
-    done | sort -u
+snapshot_line_for() {
+    _pkg="$1"
+    _uid=$(package_uid "$_pkg")
+    if [ -n "$_uid" ]; then
+        printf '%s %s' "$_pkg" "$_uid"
+    else
+        printf '%s' "$_pkg"
+    fi
 }
 
-snapshot_has_record() {
+snapshot_matches_install() {
     _pkg="$1"
-    _uid="$2"
-    grep -qxF "$_pkg $_uid" "$SNAPSHOT" 2>/dev/null && return 0
-    # Legacy name-only rows (pre-uid snapshots) do not match a new install UID.
-    return 1
+    _line=$(snapshot_line_for "$_pkg")
+    grep -qxF "$_line" "$SNAPSHOT" 2>/dev/null
+}
+
+should_block_pkg() {
+    _pkg="$1"
+    if snapshot_matches_install "$_pkg"; then
+        return 1
+    fi
+    _uid=$(package_uid "$_pkg")
+    if [ -n "$_uid" ]; then
+        _old=$(grep -m1 "^${_pkg} " "$SNAPSHOT" 2>/dev/null) || true
+        if [ -n "$_old" ] && [ "$_old" != "$_pkg $_uid" ]; then
+            return 0
+        fi
+    fi
+    grep -qxF "$_pkg" "$SNAPSHOT" 2>/dev/null && return 1
+    grep -q "^${_pkg} " "$SNAPSHOT" 2>/dev/null && return 1
+    return 0
+}
+
+record_snapshot_pkg() {
+    _pkg="$1"
+    _line=$(snapshot_line_for "$_pkg")
+    grep -qxF "$_line" "$SNAPSHOT" 2>/dev/null && return 0
+    _tmp="$STATE_DIR/.snapshot_pkg"
+    if [ -f "$SNAPSHOT" ]; then
+        while IFS= read -r _row || [ -n "$_row" ]; do
+            [ -z "$_row" ] && continue
+            case "$_row" in
+                "$_pkg"|"${_pkg} "*)
+                    ;;
+                *)
+                    printf '%s\n' "$_row"
+                    ;;
+            esac
+        done <"$SNAPSHOT" >"$_tmp" 2>/dev/null || : >"$_tmp"
+        mv "$_tmp" "$SNAPSHOT"
+    fi
+    printf '%s\n' "$_line" >>"$SNAPSHOT"
+}
+
+prune_uninstalled_from_snapshot() {
+    _cur="$STATE_DIR/.reconcile_pkgnames"
+    current_packages >"$_cur"
+    [ -s "$_cur" ] || return 0
+    _tmp="$STATE_DIR/.snapshot_pruned"
+    while IFS= read -r _row || [ -n "$_row" ]; do
+        [ -z "$_row" ] && continue
+        _pkg=${_row%% *}
+        grep -qxF "$_pkg" "$_cur" 2>/dev/null && printf '%s\n' "$_row"
+    done <"$SNAPSHOT" >"$_tmp" 2>/dev/null || : >"$_tmp"
+    mv "$_tmp" "$SNAPSHOT"
+    rm -f "$_cur"
 }
 
 run_firewallctl() {
@@ -91,7 +163,6 @@ run_firewallctl() {
         log "ERROR: missing $FIREWALLCTL (is the module enabled?)"
         return 127
     fi
-    # Watcher runs as root from Magisk service; su 0 can hang or fail here.
     if [ "$(id -u 2>/dev/null)" = "0" ]; then
         "$FIREWALLCTL" "$@"
         return $?
@@ -104,21 +175,15 @@ run_firewallctl() {
 }
 
 package_visible() {
-    pm list packages "$1" 2>/dev/null | grep -qxF "package:$1"
+    "$PM" list packages "$1" 2>/dev/null | grep -qxF "package:$1"
 }
 
-package_ready() {
-    _pkg="$1"
-    package_visible "$_pkg" && [ -n "$(package_uid "$_pkg")" ]
-}
-
-# Event-driven: one check; the next packages.xml/packages.list inotify event retries.
 wait_for_package() {
     pkg="$1"
-    if package_ready "$pkg"; then
+    if package_visible "$pkg"; then
         return 0
     fi
-    log "defer $pkg (not ready for pm+uid; will retry on next package DB event)"
+    log "defer $pkg (not visible to pm yet; will retry on next package DB event)"
     return 1
 }
 
@@ -126,17 +191,6 @@ NOTIFY_APK_COMPONENT="app.firewall.notify"
 NOTIFY_RUNNER=app.firewall.notify.NotifyRunner
 ALLOW_COMPLETE_RUNNER=app.firewall.notify.AllowCompleteRunner
 
-if [ -x /system/bin/pm ]; then
-    AM=/system/bin/am
-    PM=/system/bin/pm
-    CMD=/system/bin/cmd
-    APP_PROCESS=/system/bin/app_process
-else
-    AM=am
-    PM=pm
-    CMD=cmd
-    APP_PROCESS=app_process
-fi
 
 # Resolve app_process: "test -x app_process" does not search PATH.
 if [ ! -x "$APP_PROCESS" ] 2>/dev/null; then
@@ -485,80 +539,59 @@ reconcile() {
     if ! mkdir "$LOCK" 2>/dev/null; then
         return 0
     fi
-    if [ ! -f "$SNAPSHOT" ]; then
-        current_records > "$SNAPSHOT"
-        log "initial snapshot: $(wc -l < "$SNAPSHOT") user app records"
+    if ! current=$(current_packages) || [ -z "$current" ]; then
+        log "WARN: pm list packages -3 empty or failed; skipping reconcile"
         rmdir "$LOCK" 2>/dev/null
         return 0
     fi
-    if current=$(current_records); then
-        _curfile="$STATE_DIR/.reconcile_current"
-        printf '%s\n' "$current" > "$_curfile"
-        # Drop snapshot rows for uninstalled apps (package name gone).
-        _snapnew="$STATE_DIR/.snapshot_pruned"
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            [ -z "$_line" ] && continue
-            _pkg=${_line%% *}
-            _uid=${_line#* }
-            if [ "$_uid" = "$_line" ]; then
-                _uid=
-            fi
-            if grep -q "^${_pkg} " "$_curfile" 2>/dev/null; then
-                if [ -n "$_uid" ]; then
-                    printf '%s %s\n' "$_pkg" "$_uid"
-                else
-                    printf '%s\n' "$_pkg"
-                fi
-            fi
-        done <"$SNAPSHOT" >"$_snapnew" 2>/dev/null || : >"$_snapnew"
-        mv "$_snapnew" "$SNAPSHOT"
-
-        _newfile="$STATE_DIR/.reconcile_new"
-        : > "$_newfile"
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            [ -z "$_line" ] && continue
-            _pkg=${_line%% *}
-            _uid=${_line#* }
-            snapshot_has_record "$_pkg" "$_uid" && continue
-            printf '%s\n' "$_pkg" >> "$_newfile"
-        done <"$_curfile"
-        rm -f "$_curfile"
-
-        if [ -s "$_newfile" ]; then
-            log "reconcile: $(wc -l < "$_newfile") package(s) to block"
-            failfile="$STATE_DIR/.reconcile_failed"
-            : > "$failfile"
-            while IFS= read -r pkg || [ -n "$pkg" ]; do
-                [ -n "$pkg" ] || continue
-                if ! apply_deny "$pkg"; then
-                    echo "$pkg" >> "$failfile"
-                fi
-            done < "$_newfile"
-            rm -f "$_newfile"
-            if [ ! -s "$failfile" ]; then
-                current_records > "$SNAPSHOT"
-            else
-                # Persist successful blocks only; failed pkgs retry on next inotify event.
-                printf '%s\n' "$current" > "$STATE_DIR/.reconcile_partial"
-                while IFS= read -r _line || [ -n "$_line" ]; do
-                    [ -z "$_line" ] && continue
-                    _pkg=${_line%% *}
-                    _uid=${_line#* }
-                    if grep -qxF "$_pkg" "$failfile" 2>/dev/null; then
-                        continue
-                    fi
-                    if ! snapshot_has_record "$_pkg" "$_uid"; then
-                        printf '%s %s\n' "$_pkg" "$_uid" >> "$SNAPSHOT"
-                    fi
-                done <"$STATE_DIR/.reconcile_partial"
-                rm -f "$STATE_DIR/.reconcile_partial"
-                log "reconcile: partial snapshot update; failed: $(tr '\n' ' ' < "$failfile")"
-            fi
-            rm -f "$failfile"
+    if [ ! -f "$SNAPSHOT" ]; then
+        printf '%s
+' "$current" | while IFS= read -r _pkg; do
+            [ -n "$_pkg" ] && record_snapshot_pkg "$_pkg"
+        done
+        log "initial snapshot: $(wc -l < "$SNAPSHOT") user packages"
+        rmdir "$LOCK" 2>/dev/null
+        return 0
+    fi
+    prune_uninstalled_from_snapshot
+    _newfile="$STATE_DIR/.reconcile_new"
+    : > "$_newfile"
+    printf '%s
+' "$current" | while IFS= read -r _pkg; do
+        [ -n "$_pkg" ] || continue
+        if should_block_pkg "$_pkg"; then
+            printf '%s
+' "$_pkg" >> "$_newfile"
         fi
+    done
+    if [ -s "$_newfile" ]; then
+        log "reconcile: $(wc -l < "$_newfile") package(s) to block"
+        failfile="$STATE_DIR/.reconcile_failed"
+        : > "$failfile"
+        while IFS= read -r pkg || [ -n "$pkg" ]; do
+            [ -n "$pkg" ] || continue
+            if ! apply_deny "$pkg"; then
+                echo "$pkg" >> "$failfile"
+            fi
+        done < "$_newfile"
+        rm -f "$_newfile"
+        _okfile="$STATE_DIR/.reconcile_ok"
+        printf '%s\n' "$current" > "$_okfile"
+        while IFS= read -r _pkg || [ -n "$_pkg" ]; do
+            [ -n "$_pkg" ] || continue
+            grep -qxF "$_pkg" "$failfile" 2>/dev/null && continue
+            record_snapshot_pkg "$_pkg"
+        done <"$_okfile"
+        rm -f "$_okfile"
+        if [ -s "$failfile" ]; then
+            log "reconcile: will retry failed: $(tr '
+' ' ' < "$failfile")"
+        fi
+        rm -f "$failfile"
     fi
     rmdir "$LOCK" 2>/dev/null
 }
+
 
 is_allow_queue_event() {
     for arg in "$@"; do
@@ -629,7 +662,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v21"
+log "firewall-watcher build=notify-apk-v22"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
