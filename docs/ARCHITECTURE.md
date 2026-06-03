@@ -156,4 +156,4 @@ Termux `.deb` installs under `…/com.termux/files/usr/`.
 
 - Inline design notes: top of `magisk/system/bin/firewall-watcher`.
 - Runtime files: [STATE.md](STATE.md).
-- Verified environment: [COMPATIBILITY.md](COMPATIBILITY.md).
+- What has been tested: [COMPATIBILITY.md](COMPATIBILITY.md).

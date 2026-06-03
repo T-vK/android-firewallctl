@@ -39,6 +39,7 @@ done
 compat="$DOC_DIR/COMPATIBILITY.md"
 assert "COMPATIBILITY mentions LineageOS 23" "grep -qF 'LineageOS 23' '$compat'"
 assert "COMPATIBILITY mentions Pixel 4" "grep -qF 'Pixel 4' '$compat'"
+assert "COMPATIBILITY does not discourage other devices" "! grep -qi 'unsupported' '$compat'"
 
 # README must not claim broad LOS 20+ support without reference to compatibility doc.
 assert "README points to compatibility doc for tested setup" \

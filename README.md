@@ -14,9 +14,8 @@ show up in the system UI immediately — no VPN, no separate iptables rules.
 
 > **Root required.** The CLI talks to Android’s network policy service as root.
 
-**Tested setup (only configuration verified by the maintainer):** LineageOS 23,
-Magisk, Google Pixel 4. Other ROMs or devices may work but are unsupported.
-See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+**Tested with:** LineageOS 23 and Magisk on a Google Pixel 4.
+Other ROMs and devices may work — we have not tried them yet. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for details.
 
 ---
 
@@ -113,7 +112,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, install detection, notifications |
 | [docs/STATE.md](docs/STATE.md) | `/data/adb/firewall_default_deny/` layout |
-| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Supported / unsupported environments |
+| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | What has been tested, likely requirements |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Logs, diagnostics, common issues |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Building, testing, releases |
 

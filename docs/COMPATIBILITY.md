@@ -1,25 +1,30 @@
 # Compatibility
 
-## Verified environment
+## What has been tested
 
-This project has **only** been exercised end-to-end on:
+End-to-end use (Magisk module, install blocking, notifications, CLI) has
+**only** been tested on:
 
 | | |
 |---|---|
 | **Device** | Google Pixel 4 |
 | **ROM** | LineageOS 23 |
-| **Root** | Magisk (module install + `su`) |
-| **Use case** | Magisk default-deny module + `firewallctl` CLI + FirewallNotify |
+| **Root** | Magisk |
 
-Treat this as the **reference stack**. Bug reports are most useful when they
-include the same details (ROM build date, Magisk version, module version).
+That is the stack the maintainer uses day to day. Bug reports are especially
+helpful when they include ROM build id, Magisk version, and module version.
 
-## Requirements (theoretical)
+## Trying it on other setups
 
-These are design targets inferred from the code, **not** a guarantee on
-untested devices:
+Nothing in the design is Pixel-4-specific on purpose. If your ROM exposes the
+same per-app network toggles in Settings (AOSP / Lineage-style
+`NetworkPolicyManager`) and you have root, it is reasonable to try the CLI or
+the Magisk module. Please open an issue or PR with what worked or what broke —
+that helps everyone.
 
-| Requirement | Reason |
+## Likely requirements
+
+| Requirement | Why |
 |---|---|
 | **Root** | `app_process` must call `INetworkPolicyManager` as root. |
 | **API 26+** | DEX built with `--min-api 26`; NPMS policy model assumed. |
@@ -27,18 +32,7 @@ untested devices:
 | **`inotifyd`** | Magisk module install detection (toybox/busybox on device). |
 | **Magisk** | For the shipped module zip overlay and `service.sh` boot hook. |
 
-## Unsupported / unknown
-
-The maintainers **do not** currently support or test:
-
-- Stock Google Pixel / Samsung / other OEM ROMs without root
-- LineageOS 20/21/22 or Android versions other than what ships on LOS 23 for Pixel 4
-- Kernels or ROMs without standard NPMS / Settings network toggles
-- Non-Magisk root (KernelSU-only, etc.) — may work, not validated
-- Emulators or CI device farms (no automated on-device tests in this repo)
-
-If something works elsewhere, that is helpful community knowledge, not an
-official compatibility promise.
+Other root solutions (e.g. KernelSU) or ROMs have not been tested here yet.
 
 ## CLI without the Magisk module
 
@@ -49,11 +43,11 @@ official compatibility promise.
 - Readable `/data/system/packages.list` for package→UID resolution
 
 The Magisk module adds install watching, notifications, and priv-app overlay —
-those parts are **more** ROM-sensitive than the bare CLI.
+those paths are more ROM-sensitive than the bare CLI.
 
 ## Policy flag names
 
-ROMs expose different `POLICY_*` constants. Always run on **your** device:
+ROMs expose different `POLICY_*` constants. On your device, run:
 
 ```bash
 firewallctl list-policies
@@ -67,6 +61,6 @@ Include:
 
 1. Device model  
 2. Exact ROM name and build id  
-3. Magisk version  
+3. Root / Magisk version (or how you obtained root)  
 4. Module / release version (`module.prop` or GitHub tag)  
 5. Relevant excerpt of `/data/adb/firewall_default_deny/watcher.log`
