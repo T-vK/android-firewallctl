@@ -67,6 +67,11 @@ run_firewallctl() {
         log "ERROR: missing $FIREWALLCTL (is the module enabled?)"
         return 127
     fi
+    # Watcher runs as root from Magisk service; su 0 can hang or fail here.
+    if [ "$(id -u 2>/dev/null)" = "0" ]; then
+        "$FIREWALLCTL" "$@"
+        return $?
+    fi
     if [ -x /system/bin/su ]; then
         /system/bin/su 0 "$FIREWALLCTL" "$@"
     else
@@ -212,6 +217,13 @@ notify_shell_cmd() {
     pkg="$1"
     _intent="intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${pkg};end"
     _text="${pkg} was installed and network access was disabled by default."
+    if [ "$(id -u 2>/dev/null)" = "0" ]; then
+        "$CMD" notification post \
+            -t "Internet blocked for new app" \
+            -c "$_intent" \
+            "firewall_default_deny_${pkg}" \
+            "$_text" >>"$LOGFILE" 2>&1 && return 0
+    fi
     if [ -x /system/bin/su ]; then
         /system/bin/su 2000 "$CMD" notification post \
             -t "Internet blocked for new app" \
@@ -444,8 +456,23 @@ apply_deny() {
     return 1
 }
 
+reconcile_stale_lock() {
+    if [ ! -d "$LOCK" ]; then
+        return 0
+    fi
+    _age=0
+    _now=$(date +%s 2>/dev/null) || return 0
+    _mtime=$(stat -c %Y "$LOCK" 2>/dev/null) || return 0
+    _age=$((_now - _mtime))
+    if [ "$_age" -gt 120 ]; then
+        log "reconcile: clearing stale lock (${_age}s)"
+        rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null
+    fi
+}
+
 reconcile() {
     process_allow_queue
+    reconcile_stale_lock
     if ! mkdir "$LOCK" 2>/dev/null; then
         return 0
     fi
@@ -458,6 +485,7 @@ reconcile() {
     if current=$(current_packages); then
         new=$(printf '%s\n' "$current" | comm -23 - "$SNAPSHOT" 2>/dev/null)
         if [ -n "$new" ]; then
+            log "reconcile: $(printf '%s\n' "$new" | sed '/^$/d' | wc -l) new package(s)"
             failfile="$STATE_DIR/.reconcile_failed"
             : > "$failfile"
             printf '%s\n' "$new" | while IFS= read -r pkg; do
@@ -473,8 +501,15 @@ reconcile() {
             fi
             rm -f "$failfile"
         else
-            # Drop uninstalled packages so a later reinstall is detected as new.
-            printf '%s\n' "$current" > "$SNAPSHOT"
+            # Refresh snapshot only when it still lists uninstalled packages.
+            _curfile="$STATE_DIR/.reconcile_current"
+            printf '%s\n' "$current" > "$_curfile"
+            removed=$(comm -23 "$SNAPSHOT" "$_curfile" 2>/dev/null | sed '/^$/d')
+            rm -f "$_curfile"
+            if [ -n "$removed" ]; then
+                printf '%s\n' "$current" > "$SNAPSHOT"
+                log "reconcile: pruned uninstalled from snapshot"
+            fi
         fi
     fi
     rmdir "$LOCK" 2>/dev/null
@@ -549,7 +584,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v19"
+log "firewall-watcher build=notify-apk-v20"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
