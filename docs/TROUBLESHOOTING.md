@@ -67,11 +67,11 @@ protects against bad `pm` output. Check log context; fix underlying PM issues.
 
 ## Termux: `firewallctl` not found
 
-Ensure `.deb` installed and use `tsu` for root:
+Ensure `.deb` installed and use Magisk `su` for root:
 
 ```bash
 which firewallctl
-tsu -c 'firewallctl list-policies'
+su -c 'firewallctl list-policies'
 ```
 
 ## Build works on CI but not locally

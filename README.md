@@ -86,11 +86,11 @@ curl -fsSL -o firewallctl.deb \
     | head -1 | cut -d'"' -f4)"
 ```
 
-**2. Install** in Termux:
+**2. Install** in Termux, then run as root with Magisk `su` (do not use the obsolete `tsu` package):
 
 ```bash
 dpkg -i firewallctl.deb
-tsu -c 'firewallctl list-policies'
+su -c 'firewallctl list-policies'
 ```
 
 ---
