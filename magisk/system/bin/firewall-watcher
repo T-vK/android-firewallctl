@@ -299,24 +299,29 @@ notify_grant_permissions() {
 
 notify_verify_posted() {
     _pkg="$1"
+    if [ "$_pkg" = "__firewall_notify_init__" ]; then
+        return 0
+    fi
     if [ -n "${FIREWALL_SKIP_NOTIFY_VERIFY:-}" ] || ! command -v dumpsys >/dev/null 2>&1; then
         return 0
     fi
     _tag="firewall_default_deny_${_pkg}"
+    _vf="$STATE_DIR/.notify_verify_dump"
     _n=0
     while [ "$_n" -lt 20 ]; do
-        _dump=$(dumpsys notification --noredact 2>/dev/null) || _dump=""
-        # Tag appears as tag=... or inside NotificationRecord; shell/cmd posts count too.
-        if printf '%s' "$_dump" | grep -q "$_tag"; then
+        dumpsys notification --noredact 2>/dev/null >"$_vf" || : >"$_vf"
+        if grep -q "$_tag" "$_vf" 2>/dev/null; then
+            rm -f "$_vf" 2>/dev/null
             return 0
         fi
-        if printf '%s' "$_dump" | grep -q "pkg=app.firewall.notify" \
-                && printf '%s' "$_dump" | grep -q "$_pkg"; then
+        if grep -q "pkg=app.firewall.notify" "$_vf" 2>/dev/null                 && grep -qF "$_pkg" "$_vf" 2>/dev/null; then
+            rm -f "$_vf" 2>/dev/null
             return 0
         fi
         _n=$((_n + 1))
         sleep 0.15
     done
+    rm -f "$_vf" 2>/dev/null
     log "notify: verify failed (no active notification for $_pkg in dumpsys)"
     return 1
 }
@@ -498,20 +503,17 @@ run_notify_apk_runner() {
     if [ -n "$_uid" ] && [ -x /system/bin/su ]; then
         _args=""
         for _a in "$@"; do
-            _esc=$(printf '%s' "$_a" | sed "s/'/'\''/g")
+            _esc=$(printf '%s' "$_a" | sed "s/'/'''/g")
             _args="$_args '$_esc'"
         done
-        /system/bin/su "$_uid" /system/bin/sh -c \
-            "CLASSPATH='$_apk' exec '$APP_PROCESS' /system/bin --nice-name=firewall-notify '$_runner'$_args" \
-            >"$_out" 2>"$_err"
+        /system/bin/su "$_uid" /system/bin/sh -c             "CLASSPATH='$_apk' exec '$APP_PROCESS' /system/bin --nice-name=firewall-notify '$_runner'$_args"             >"$_out" 2>"$_err"
         _rc=$?
     else
-        CLASSPATH="$_apk" "$APP_PROCESS" /system/bin --nice-name=firewall-notify \
-            "$_runner" "$@" >"$_out" 2>"$_err"
+        CLASSPATH="$_apk" "$APP_PROCESS" /system/bin --nice-name=firewall-notify             "$_runner" "$@" >"$_out" 2>"$_err"
         _rc=$?
     fi
     _posted=0
-    grep -q 'NotifyRunner: posted' "$_out" 2>/dev/null && _posted=1
+    grep -qE 'NotifyRunner: (posted|channel ready)' "$_out" 2>/dev/null && _posted=1
     cat "$_out" >>"$LOGFILE" 2>/dev/null
     cat "$_err" >>"$LOGFILE" 2>/dev/null
     rm -f "$_out" "$_err" 2>/dev/null
@@ -520,29 +522,27 @@ run_notify_apk_runner() {
         _run_pkg="$_a"
     done
     if [ "$_rc" -eq 0 ] && [ "$_posted" -eq 1 ]; then
-        notify_verify_posted "$_run_pkg" && return 0
+        if [ "$_run_pkg" = "__firewall_notify_init__" ]; then
+            return 0
+        fi
+        if notify_verify_posted "$_run_pkg"; then
+            return 0
+        fi
         log "notify: app_process posted but verify failed for $_run_pkg"
-        return 0
+        return 1
     fi
     return 1
 }
 
 
 notify_ensure_channel() {
-    _err="$STATE_DIR/.notify_init_err"
-  : >"$_err"
-    if notify_via_foreground_service "__firewall_notify_init__"; then
-        return 0
-    fi
     if run_notify_apk_runner "$NOTIFY_RUNNER" "__firewall_notify_init__"; then
         return 0
     fi
-    if [ -s "$_err" ]; then
-        cat "$_err" >>"$LOGFILE" 2>/dev/null
-    fi
-    rm -f "$_err" 2>/dev/null
-    log "notify: channel init best-effort failed (will still try post)"
-    return 1
+    _comp="${NOTIFY_APK_COMPONENT}/.NotifyService"
+    "$AM" start-foreground-service --user 0 -n "$_comp"         --es package __firewall_notify_init__ >>"$LOGFILE" 2>&1         || "$AM" startservice --user 0 -n "$_comp"         --es package __firewall_notify_init__ >>"$LOGFILE" 2>&1         || true
+    sleep 0.3
+    return 0
 }
 
 notify_user_inner() {
@@ -896,6 +896,16 @@ is_allow_queue_event() {
 
 # --- dispatch ---
 
+log_lines_since_mark() {
+    _m="$1"
+    _tail="${2:-25}"
+    [ -f "$LOGFILE" ] || return 0
+    awk -v m="$_m" '
+        index($0, m) { p=1; next }
+        p && /notify:|NotifyRunner|NotifyService|test-notify:|ERROR: notify/ { print }
+    ' "$LOGFILE" 2>/dev/null | tail -"$_tail"
+}
+
 case "$1" in
     --wake)
         wake_daemon
@@ -918,14 +928,14 @@ case "$1" in
             echo "OK: notification path succeeded (see $LOGFILE)"
             if [ -f "$LOGFILE" ]; then
                 echo "--- watcher.log (this run) ---"
-                awk -v m="$_test_mark" '$0 ~ m {p=1} p' "$LOGFILE" 2>/dev/null | tail -25
+                log_lines_since_mark "$_test_mark" 25
             fi
             exit 0
         fi
         echo "FAIL: all notification paths failed (see $LOGFILE)" >&2
         if [ -f "$LOGFILE" ]; then
             echo "--- watcher.log (this run) ---"
-            awk -v m="$_test_mark" '$0 ~ m {p=1} p' "$LOGFILE" 2>/dev/null | tail -40
+            log_lines_since_mark "$_test_mark" 40
         fi
         exit 1
         ;;
@@ -975,7 +985,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v43"
+log "firewall-watcher build=memdiff-v44"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker
