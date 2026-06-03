@@ -144,7 +144,8 @@ magisk: $(DEX_JAR) $(NOTIFY_APK) $(WRAPPER_SRC) $(MAGISK_DIR)/module.prop
 	@command -v zip >/dev/null 2>&1 || { echo "error: zip not found (install zip)"; exit 1; }
 	@rm -rf $(OUT_DIR)/magisk-staging
 	@mkdir -p $(OUT_DIR)/magisk-staging/system/bin \
-	          $(OUT_DIR)/magisk-staging/system/app/FirewallNotify
+	          $(OUT_DIR)/magisk-staging/system/priv-app/FirewallNotify \
+	          $(OUT_DIR)/magisk-staging/system/etc/permissions
 	@sed -e 's/^version=.*/version=v$(VERSION)/' \
 	     -e 's/^versionCode=.*/versionCode=$(VERSION_CODE)/' \
 	     $(MAGISK_DIR)/module.prop > $(OUT_DIR)/magisk-staging/module.prop
@@ -157,7 +158,9 @@ magisk: $(DEX_JAR) $(NOTIFY_APK) $(WRAPPER_SRC) $(MAGISK_DIR)/module.prop
 	     $(OUT_DIR)/magisk-staging/system/bin/firewall-watcher
 	@cp $(MAGISK_DIR)/system/bin/firewall-allow-app \
 	     $(OUT_DIR)/magisk-staging/system/bin/firewall-allow-app
-	@cp $(NOTIFY_APK)                  $(OUT_DIR)/magisk-staging/system/app/FirewallNotify/FirewallNotify.apk
+	@cp $(NOTIFY_APK)                  $(OUT_DIR)/magisk-staging/system/priv-app/FirewallNotify/FirewallNotify.apk
+	@cp $(MAGISK_DIR)/system/etc/permissions/privapp-permissions-app.firewall.notify.xml \
+	     $(OUT_DIR)/magisk-staging/system/etc/permissions/privapp-permissions-app.firewall.notify.xml
 	@chmod 0755 $(OUT_DIR)/magisk-staging/service.sh \
 	            $(OUT_DIR)/magisk-staging/customize.sh \
 	            $(OUT_DIR)/magisk-staging/uninstall.sh \

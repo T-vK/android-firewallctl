@@ -1,5 +1,5 @@
 /*
- * Request allow via root watcher (queue wake, no su from the system app).
+ * Allow network: prefer in-process NetworkPolicyManager (priv-app), else root watcher queue.
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
@@ -21,15 +21,12 @@ final class AllowHelper {
 
     static final String COMPLETE_MARKER_NAME = "firewall_allow_complete";
 
-    private static final String ALLOW_FIFO =
-            "/data/local/tmp/firewall_default_deny_allow.fifo";
-
     private static final String QUEUE_LOCAL = "/data/local/tmp/firewall_default_deny_allow";
 
     private static final String QUEUE_STATE =
             "/data/adb/firewall_default_deny/allow_queue";
 
-    private static final int ALLOW_WAIT_MS = 15000;
+    private static final int ALLOW_WAIT_MS = 20000;
 
     private AllowHelper() {
     }
@@ -48,19 +45,53 @@ final class AllowHelper {
         }
     }
 
-    /** Queue allow to root watcher; returns true when watcher confirms success. */
+    /**
+     * Allow network for pkg. Uses privileged NPM when available; otherwise queues work
+     * for the root watcher and waits for a marker file at our cache path.
+     */
     static boolean allowPackage(Context ctx, String pkg) {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
         clearCompleteMarker(ctx);
+
+        if (PolicyHelper.allowNetwork(pkg)) {
+            LocalAllowlist.add(ctx, pkg);
+            queueRootSync(pkg);
+            return true;
+        }
+
+        Log.i(TAG, "policy allow unavailable; queueing for root watcher: " + pkg);
+        return allowViaWatcher(ctx, pkg);
+    }
+
+    private static void queueRootSync(String pkg) {
+        byte[] line = (pkg + "\n").getBytes(StandardCharsets.UTF_8);
+        for (String path : new String[] {QUEUE_LOCAL, QUEUE_STATE}) {
+            try {
+                File file = new File(path);
+                FileOutputStream fos = new FileOutputStream(file, true);
+                fos.write(line);
+                fos.close();
+                return;
+            } catch (Throwable ignored) {
+                /* watcher will still see local allowlist */
+            }
+        }
+    }
+
+    private static boolean allowViaWatcher(Context ctx, String pkg) {
+        File marker = completeMarkerFile(ctx);
+        if (marker == null) {
+            return false;
+        }
         BroadcastReceiver receiver = registerAllowReceiver(ctx, pkg);
         try {
             AllowCompleteReceiver.beginWait(pkg);
-            boolean queued = appendQueue(pkg) || writeFifo(pkg);
-            if (!queued) {
+            if (!appendQueueWithMarker(pkg, marker)) {
                 AllowCompleteReceiver.clear();
-                return runAllowAsRoot(pkg);
+                Log.w(TAG, "allow queue write failed for " + pkg);
+                return false;
             }
             return AllowCompleteReceiver.awaitComplete(ctx, pkg, ALLOW_WAIT_MS);
         } finally {
@@ -112,21 +143,10 @@ final class AllowHelper {
         }
     }
 
-    private static boolean writeFifo(String pkg) {
-        try {
-            FileOutputStream fos = new FileOutputStream(ALLOW_FIFO);
-            fos.write((pkg + "\n").getBytes(StandardCharsets.UTF_8));
-            fos.close();
-            Log.i(TAG, "allow fifo: " + pkg);
-            return true;
-        } catch (Throwable t) {
-            Log.w(TAG, "allow fifo: " + t.getMessage());
-            return false;
-        }
-    }
-
-    private static boolean appendQueue(String pkg) {
-        byte[] line = (pkg + "\n").getBytes(StandardCharsets.UTF_8);
+    /** pkg TAB absolute-path-to-marker-file */
+    private static boolean appendQueueWithMarker(String pkg, File marker) {
+        String line = pkg + "\t" + marker.getAbsolutePath() + "\n";
+        byte[] bytes = line.getBytes(StandardCharsets.UTF_8);
         for (String path : new String[] {QUEUE_LOCAL, QUEUE_STATE}) {
             try {
                 File file = new File(path);
@@ -135,41 +155,14 @@ final class AllowHelper {
                     parent.mkdirs();
                 }
                 FileOutputStream fos = new FileOutputStream(file, true);
-                fos.write(line);
+                fos.write(bytes);
                 fos.close();
-                Log.i(TAG, "allow queue: " + pkg + " via " + path);
+                Log.i(TAG, "allow queue: " + pkg + " marker=" + marker.getAbsolutePath());
                 return true;
             } catch (Throwable t) {
                 Log.w(TAG, "allow queue " + path + ": " + t.getMessage());
             }
         }
         return false;
-    }
-
-    private static boolean runAllowAsRoot(String pkg) {
-        String[][] attempts = {
-                {"/system/bin/su", "-c", "/system/bin/firewall-allow-app " + pkg},
-                {"/system/bin/su", "0", "/system/bin/firewall-allow-app", pkg},
-                {"/system/bin/firewall-allow-app", pkg},
-        };
-        for (String[] cmd : attempts) {
-            if (run(cmd) == 0) {
-                return true;
-            }
-            Log.w(TAG, "allow su failed");
-        }
-        return false;
-    }
-
-    private static int run(String[] cmd) {
-        try {
-            Process p = new ProcessBuilder(cmd)
-                    .redirectErrorStream(true)
-                    .start();
-            return p.waitFor();
-        } catch (Throwable t) {
-            Log.w(TAG, "allow exec: " + t.getMessage());
-            return -1;
-        }
     }
 }
