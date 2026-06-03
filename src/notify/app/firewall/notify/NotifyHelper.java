@@ -103,12 +103,12 @@ public final class NotifyHelper {
     }
 
     public static boolean waitForBlockedNotificationActive(NotificationManager nm, String pkg) {
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < 10; i++) {
             if (isBlockedNotificationActive(nm, pkg)) {
                 return true;
             }
             try {
-                Thread.sleep(100L);
+                Thread.sleep(25L);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
                 return false;

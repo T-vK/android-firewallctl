@@ -97,7 +97,7 @@ Edits take effect on the next install event — no restart required.
 |---|---|---|
 | `FIREWALL_STATE_DIR` | `/data/adb/firewall_default_deny` | State directory location. Mainly for tests. |
 | `FIREWALL_WATCH_DIR` | `/data/system` | Directory watched by `inotifyd`. |
-| `FIREWALL_WATCHER_SAFETY_INTERVAL` | `15` | Safety-net poll period in seconds. Install detection is normally inotify-driven; this is backup if inotifyd fails. |
+| `FIREWALL_WATCHER_SAFETY_INTERVAL` | `0` (off) | Optional backup poll in seconds. **Default off** — install detection is inotify-only. Set to e.g. `300` only if you need a fallback when inotifyd is broken; if inotifyd is missing, the watcher auto-enables a 15s poll. |
 
 Set them in `service.sh` if you want different defaults baked into the
 module.
