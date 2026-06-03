@@ -22,7 +22,11 @@ FIREWALLCTL="${FIREWALLCTL:-/system/bin/firewallctl}"
 INSTALL_SETTLE_SEC="${FIREWALL_INSTALL_SETTLE_SEC:-15}"
 
 mkdir -p "$STATE_DIR"
+ALLOW_QUEUE="$STATE_DIR/allow_queue"
+ALLOW_QUEUE_LOCAL="/data/local/tmp/firewall_default_deny_allow"
 touch "$ALLOWLIST"
+touch "$ALLOW_QUEUE" "$ALLOW_QUEUE_LOCAL" 2>/dev/null || true
+chmod 0666 "$ALLOW_QUEUE" "$ALLOW_QUEUE_LOCAL" 2>/dev/null || true
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
@@ -176,6 +180,33 @@ notify_user() {
 }
 
 
+process_allow_queue() {
+    _lock="$STATE_DIR/allow_queue.lock"
+    if ! mkdir "$_lock" 2>/dev/null; then
+        return 0
+    fi
+    for _q in "$ALLOW_QUEUE_LOCAL" "$ALLOW_QUEUE"; do
+        if [ ! -s "$_q" ]; then
+            continue
+        fi
+        while IFS= read -r _pkg || [ -n "$_pkg" ]; do
+            [ -n "$_pkg" ] || continue
+            if [ -x /system/bin/firewall-allow-app ]; then
+                if /system/bin/firewall-allow-app "$_pkg" >>"$LOGFILE" 2>&1; then
+                    log "allow_queue: allowed $_pkg"
+                else
+                    log "allow_queue: firewall-allow-app failed for $_pkg"
+                fi
+            else
+                log "allow_queue: missing /system/bin/firewall-allow-app"
+            fi
+        done <"$_q"
+        : >"$_q"
+    done
+    rmdir "$_lock" 2>/dev/null
+}
+
+
 apply_deny() {
     pkg="$1"
     if is_allowlisted "$pkg"; then
@@ -196,6 +227,7 @@ apply_deny() {
 }
 
 reconcile() {
+    process_allow_queue
     if ! mkdir "$LOCK" 2>/dev/null; then
         return 0
     fi
@@ -264,14 +296,16 @@ fi
 rmdir "$LOCK" 2>/dev/null
 
 cleanup() {
+    [ -n "$ALLOW_POLL_PID" ] && kill "$ALLOW_POLL_PID" 2>/dev/null
     [ -n "$INOTIFY_SUP_PID" ] && kill "$INOTIFY_SUP_PID" 2>/dev/null
     rmdir "$LOCK" 2>/dev/null
+    rmdir "$STATE_DIR/allow_queue.lock" 2>/dev/null
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v9"
+log "firewall-watcher build=notify-apk-v10"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd on $WATCH_DIR, safety poll ${SAFETY_INTERVAL}s)"
@@ -280,6 +314,14 @@ else
 fi
 
 reconcile
+
+(
+    while true; do
+        process_allow_queue
+        sleep 2
+    done
+) &
+ALLOW_POLL_PID=$!
 
 (
     while true; do

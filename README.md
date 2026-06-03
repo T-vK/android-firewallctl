@@ -192,3 +192,10 @@ is produced. Commit messages therefore drive the entire release: use
 Apache-2.0. See [LICENSE](LICENSE). No proprietary Google libraries are
 used at build time or at runtime; the dex backend (R8) is itself
 Apache-2.0.
+
+
+**Allow network** on the notification does not call Magisk su from the app (you
+will not get a superuser prompt for Firewall Notify). It queues the package for
+the root **firewall-watcher**, which runs `firewall-allow-app` within a few
+seconds.
+

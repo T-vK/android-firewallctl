@@ -23,6 +23,8 @@ mkdir -p "$STATE_DIR"
 # Lines starting with '#' are comments.
 EOF
 chmod 0644 "$STATE_DIR/allowlist.txt"
+touch "$STATE_DIR/allow_queue" /data/local/tmp/firewall_default_deny_allow 2>/dev/null || true
+chmod 0666 "$STATE_DIR/allow_queue" /data/local/tmp/firewall_default_deny_allow 2>/dev/null || true
 
 ui_print "- State directory: $STATE_DIR"
 ui_print "- Edit $STATE_DIR/allowlist.txt to exempt packages"
