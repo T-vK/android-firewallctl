@@ -57,20 +57,19 @@ adb push build/firewall_default_deny_*.zip /sdcard/
 # Magisk Manager → Modules → Install from storage → reboot
 ```
 
-After reboot, a watcher daemon runs as root. It:
+After reboot, a long-running watcher daemon runs as root. It:
 
-1. Watches `/data/system/` via `inotifyd`. When `packages.xml` changes
-   (i.e. PMS just committed an install), it reconciles `pm list packages -3`
-   against a snapshot at `/data/adb/firewall_default_deny/known.txt`.
-2. For each new third-party package not on the allowlist, it invokes
-   `firewallctl set <pkg> +REJECT_ALL`. The change is **immediately
-   reflected in the system Settings UI**.
-3. Shows an actionable notification (Allow network / Network settings) via
-   the bundled `FirewallNotify` system app (`app.firewall.notify`), with
-   `su 2000 cmd notification` and `am start` fallbacks if the APK is missing.
-4. End-to-end latency from `close_write` on `packages.xml` to policy
-   applied is typically 150–400 ms — fast enough to win the race against
-   most "Open" taps post-install.
+1. Reads the current user-app list from `packages.list` / `pm list` into
+   **RAM** (no `known.txt` on disk).
+2. Watches `packages.list` and `packages.xml` via `inotifyd`. Callbacks only
+   poke a wake fifo; the daemon diffs the new list against its in-memory
+   baseline (new package names and UID changes / reinstalls).
+3. For each change (except manual allowlist entries on **new** installs),
+   posts a **FirewallNotify** notification first, then applies
+   `firewallctl set <pkg> +REJECT_ALL` on a background queue.
+4. Ignores untrusted reads (fewer than five user apps) and suspicious drops
+   (baseline had many apps, current read is tiny) without using stale disk
+   state.
 
 
 ### Allowlist
@@ -192,10 +191,3 @@ is produced. Commit messages therefore drive the entire release: use
 Apache-2.0. See [LICENSE](LICENSE). No proprietary Google libraries are
 used at build time or at runtime; the dex backend (R8) is itself
 Apache-2.0.
-
-
-**Allow network** does not call Magisk su from the app (no superuser prompt).
-It writes the package name into a named pipe; **firewall-watcher** wakes
-immediately and runs `firewall-allow-app` as root. A file-queue + inotify path
-exists only as fallback.
-
