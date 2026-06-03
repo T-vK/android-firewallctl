@@ -20,10 +20,13 @@ WAKE_FIFO="$STATE_DIR/package_events.fifo"
 LOCK="$STATE_DIR/reconcile.lock"
 WATCH_DIR="${FIREWALL_WATCH_DIR:-/data/system}"
 PACKAGES_LIST="${FIREWALL_PACKAGES_LIST:-/data/system/packages.list}"
-SAFETY_INTERVAL="${FIREWALL_WATCHER_SAFETY_INTERVAL:-60}"
+SAFETY_INTERVAL="${FIREWALL_WATCHER_SAFETY_INTERVAL:-15}"
 FIREWALLCTL="${FIREWALLCTL:-/system/bin/firewallctl}"
 MASS_BLOCK_LIMIT="${FIREWALL_MASS_BLOCK_LIMIT:-10}"
 MIN_USER_PACKAGES="${FIREWALL_MIN_USER_PACKAGES:-5}"
+WATCHER_BIN="${FIREWALL_WATCHER_BIN:-/system/bin/firewall-watcher}"
+[ -x "$WATCHER_BIN" ] || WATCHER_BIN="$0"
+case "$WATCHER_BIN" in /*) ;; *) WATCHER_BIN="/system/bin/firewall-watcher" ;; esac
 BLOCK_QUEUE="$STATE_DIR/block_queue"
 
 # In-memory baseline: "pkg uid" lines (never written to disk).
@@ -802,7 +805,10 @@ start_allow_fifo_reader() {
 # --- core: diff packages.list vs in-memory baseline ---
 
 wake_daemon() {
-    [ -p "$WAKE_FIFO" ] && printf '\n' >>"$WAKE_FIFO" 2>/dev/null
+    _why="${1:-unknown}"
+    if [ -p "$WAKE_FIFO" ]; then
+        printf '%s\n' "$_why" >>"$WAKE_FIFO" 2>/dev/null
+    fi
 }
 
 handle_package_list_change() {
@@ -872,10 +878,46 @@ establish_baseline_when_ready() {
     return 1
 }
 
+
+build_inotify_targets() {
+    _out=""
+    if [ -d "$WATCH_DIR" ]; then
+        _out="$WATCH_DIR"
+    fi
+    for _f in "$PACKAGES_LIST" "$WATCH_DIR/packages.xml"; do
+        [ -n "$_f" ] || continue
+        [ -e "$_f" ] || continue
+        case " $_out " in *" $_f "*) ;; *) _out="$_out $_f" ;; esac
+    done
+    for _f in "$ALLOW_QUEUE_LOCAL" "$ALLOW_QUEUE"; do
+        [ -n "$_f" ] || continue
+        [ -e "$_f" ] || continue
+        case " $_out " in *" $_f "*) ;; *) _out="$_out $_f" ;; esac
+    done
+    printf '%s' "$_out" | sed 's/^ //'
+}
+
+run_inotifyd_once() {
+    _targets=$(build_inotify_targets)
+    if [ -z "$_targets" ]; then
+        log "inotifyd: no watch targets under $WATCH_DIR"
+        return 1
+    fi
+    log "inotifyd: $WATCHER_BIN $_targets"
+    # shellcheck disable=SC2086
+    inotifyd "$WATCHER_BIN" $_targets 2>>"$LOGFILE"
+}
+
 is_package_db_event() {
     for _arg in "$@"; do
         case "$_arg" in
             packages.xml|packages.list|*/packages.xml|*/packages.list)
+                return 0
+                ;;
+        esac
+        _base=${_arg##*/}
+        case "$_base" in
+            packages.xml|packages.list)
                 return 0
                 ;;
         esac
@@ -908,7 +950,7 @@ log_lines_since_mark() {
 
 case "$1" in
     --wake)
-        wake_daemon
+        wake_daemon "inotify:callback"
         exit 0
         ;;
     --allow)
@@ -941,7 +983,7 @@ case "$1" in
         ;;
     --reconcile)
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-            wake_daemon
+            wake_daemon "reconcile"
             exit 0
         fi
         establish_baseline_when_ready
@@ -952,9 +994,9 @@ case "$1" in
         ;;
     *)
         if is_package_db_event "$@"; then
-            wake_daemon
+            wake_daemon "inotify:package-db"
         elif is_allow_queue_event "$@"; then
-            wake_daemon
+            wake_daemon "inotify:allow-queue"
         fi
         exit 0
         ;;
@@ -985,7 +1027,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=memdiff-v44"
+log "firewall-watcher build=memdiff-v45"
 ensure_notify_ready || log "WARN: FirewallNotify not ready; notifications may fail until install succeeds"
 
 start_block_worker
@@ -994,31 +1036,29 @@ start_allow_fifo_reader
 establish_baseline_when_ready
 
 if command -v inotifyd >/dev/null 2>&1; then
-    log "daemon: inotifyd -> wake fifo (in-memory baseline)"
+  log "daemon: inotifyd -> wake fifo (safety poll ${SAFETY_INTERVAL}s backup)"
     (
         while true; do
-            _targets="$PACKAGES_LIST $WATCH_DIR/packages.xml"
-            [ -e "$ALLOW_QUEUE_LOCAL" ] && _targets="$_targets $ALLOW_QUEUE_LOCAL:w"
-            [ -e "$ALLOW_QUEUE" ] && _targets="$_targets $ALLOW_QUEUE:w"
-            # shellcheck disable=SC2086
-            inotifyd "$0" $_targets 2>>"$LOGFILE"
-            log "inotifyd exited rc=$?, restarting in 5s"
+            run_inotifyd_once
+            _irc=$?
+            log "inotifyd exited rc=$_irc, restarting in 5s"
             sleep 5
         done
     ) &
     INOTIFY_SUP_PID=$!
 else
-    log "daemon: inotifyd missing; safety poll only"
+    log "daemon: inotifyd missing; safety poll ${SAFETY_INTERVAL}s only"
 fi
 
 (
     while true; do
         sleep "$SAFETY_INTERVAL"
-        wake_daemon
+        wake_daemon "safety-poll"
     done
 ) &
 SAFETY_POLL_PID=$!
 
 while read -r _wake <"$WAKE_FIFO" 2>/dev/null; do
+    [ -n "$_wake" ] && log "wake: $_wake"
     handle_package_list_change
 done
