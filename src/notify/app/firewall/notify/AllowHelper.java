@@ -6,14 +6,9 @@ package app.firewall.notify;
 
 import android.util.Log;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 
 final class AllowHelper {
 
@@ -27,95 +22,23 @@ final class AllowHelper {
     private static final String QUEUE_STATE =
             "/data/adb/firewall_default_deny/allow_queue";
 
-    /** Written by firewall-watcher after firewall-allow-app succeeds. */
-    private static final String ALLOW_DONE =
-            "/data/local/tmp/firewall_default_deny_done";
-
-    private static final String ALLOWLIST =
-            "/data/adb/firewall_default_deny/allowlist.txt";
-
-    private static final int ALLOW_WAIT_MS = 8000;
+    private static final int ALLOW_WAIT_MS = 10000;
 
     private AllowHelper() {
     }
 
-    /** Queue or run allow; returns true only when policy was actually cleared. */
+    /** Queue allow to root watcher; returns true when watcher confirms success. */
     static boolean allowPackage(String pkg) {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
-        if (writeFifo(pkg) || appendQueue(pkg)) {
-            return waitForAllowComplete(pkg, ALLOW_WAIT_MS);
+        AllowCompleteReceiver.beginWait(pkg);
+        boolean queued = writeFifo(pkg) || appendQueue(pkg);
+        if (!queued) {
+            AllowCompleteReceiver.clear();
+            return runAllowAsRoot(pkg);
         }
-        return runAllowAsRoot(pkg);
-    }
-
-    static boolean waitForAllowComplete(String pkg, int timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (isPkgListedInFile(ALLOW_DONE, pkg) || isPkgInAllowlist(pkg)) {
-                removePkgFromDoneFile(pkg);
-                return true;
-            }
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isPkgListedInFile(String path, String pkg) {
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (pkg.equals(line.trim())) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-            /* not readable yet */
-        }
-        return false;
-    }
-
-    private static boolean isPkgInAllowlist(String pkg) {
-        return isPkgListedInFile(ALLOWLIST, pkg);
-    }
-
-    private static void removePkgFromDoneFile(String pkg) {
-        File f = new File(ALLOW_DONE);
-        if (!f.isFile()) {
-            return;
-        }
-        List<String> keep = new ArrayList<>();
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (!pkg.equals(line.trim())) {
-                    keep.add(line);
-                }
-            }
-        } catch (Throwable ignored) {
-            return;
-        }
-        try (FileOutputStream fos = new FileOutputStream(f, false)) {
-            for (int i = 0; i < keep.size(); i++) {
-                if (i > 0) {
-                    fos.write('\n');
-                }
-                fos.write(keep.get(i).getBytes(StandardCharsets.UTF_8));
-            }
-            if (!keep.isEmpty()) {
-                fos.write('\n');
-            }
-        } catch (Throwable ignored) {
-            /* best-effort */
-        }
+        return AllowCompleteReceiver.awaitComplete(pkg, ALLOW_WAIT_MS);
     }
 
     private static boolean writeFifo(String pkg) {

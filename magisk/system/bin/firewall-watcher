@@ -187,6 +187,28 @@ notify_user() {
 }
 
 
+notify_allow_complete() {
+    _pkg="$1"
+    if [ -z "$_pkg" ]; then
+        return 1
+    fi
+    if "$AM" broadcast --user 0 \
+            -a app.firewall.notify.ALLOW_COMPLETE \
+            --es package "$_pkg" \
+            -p app.firewall.notify >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
+    if "$AM" broadcast --user 0 \
+            -a app.firewall.notify.ALLOW_COMPLETE \
+            --es package "$_pkg" \
+            -n app.firewall.notify/.AllowCompleteReceiver >>"$LOGFILE" 2>&1; then
+        return 0
+    fi
+    log "allow: broadcast ALLOW_COMPLETE failed for $_pkg"
+    return 1
+}
+
+
 allow_one_package() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 1
@@ -196,8 +218,7 @@ allow_one_package() {
     fi
     if /system/bin/firewall-allow-app "$_pkg" >>"$LOGFILE" 2>&1; then
         log "allow: allowed $_pkg"
-        printf '%s\n' "$_pkg" >>"$ALLOW_DONE"
-        chmod 0666 "$ALLOW_DONE" 2>/dev/null || true
+        notify_allow_complete "$_pkg"
         return 0
     fi
     log "allow: firewall-allow-app failed for $_pkg"
@@ -351,7 +372,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-log "firewall-watcher build=notify-apk-v12"
+log "firewall-watcher build=notify-apk-v13"
 
 if command -v inotifyd >/dev/null 2>&1; then
     log "watcher starting (inotifyd + allow fifo, safety poll ${SAFETY_INTERVAL}s)"
