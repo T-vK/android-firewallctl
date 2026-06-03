@@ -179,8 +179,13 @@ dist: $(DEX_JAR) deb magisk
 	@echo "Release artifacts for v$(VERSION):"
 	@ls -1 $(DIST_DEX_JAR) $(OUT_DIR)/firewallctl_$(VERSION)_all.deb $(MAGISK_ZIP)
 
-# Run the host-side test suite. Builds the dex jar, .deb and Magisk zip
-# first so the packaging assertions have artifacts to inspect.
+# Host tests that do not require ANDROID_HOME / FirewallNotify.apk.
+test-host: $(DEX_JAR) deb
+	@bash tests/test-watcher.sh
+	@bash tests/test-shellcheck.sh
+	@bash tests/test-docs.sh
+
+# Full suite (packaging includes Magisk zip). CI uses this target.
 test: $(DEX_JAR) deb magisk
 	@bash tests/run-tests.sh
 
