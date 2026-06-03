@@ -1,11 +1,13 @@
 /*
- * Posts a notification via app_process (no am/cmd IPC). Used when am start/broadcast
- * fails with Binder transaction errors on some ROMs.
+ * Posts a notification via app_process: starts NotifyService (foreground) in-app.
  * SPDX-License-Identifier: Apache-2.0
  */
 package app.firewall.notify;
 
+import android.app.NotificationManager;
 import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
 import android.os.Looper;
 
 public final class NotifyRunner {
@@ -26,9 +28,8 @@ public final class NotifyRunner {
             Looper.prepareMainLooper();
             grantNotificationPermission();
             Context ctx = getAppContext();
-            android.app.NotificationManager nm =
-                    (android.app.NotificationManager) ctx.getSystemService(
-                            android.content.Context.NOTIFICATION_SERVICE);
+            NotificationManager nm =
+                    (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm != null && !nm.areNotificationsEnabled()) {
                 grantNotificationPermission();
                 if (!nm.areNotificationsEnabled()) {
@@ -36,18 +37,30 @@ public final class NotifyRunner {
                     System.exit(1);
                 }
             }
+            NotifyHelper.ensureChannel(nm);
+
+            String pkg = args[0];
             if (args.length >= 2 && NotifyHelper.KIND_INSTALL_DETECT.equals(args[1])) {
-                NotifyHelper.showInstallDetected(ctx, args[0], null);
-                System.out.println("NotifyRunner: install_detect posted for " + args[0]);
-            } else {
-                NotifyHelper.showBlocked(ctx, args[0]);
-                if (!NotifyHelper.isBlockedNotificationActive(nm, args[0])) {
-                    System.err.println("NotifyRunner: notify dropped (not in active set; check icon/channel)");
-                    System.exit(1);
-                }
-                System.out.println("NotifyRunner: posted for " + args[0]);
+                NotifyHelper.showInstallDetected(ctx, pkg, null);
+                System.out.println("NotifyRunner: install_detect posted for " + pkg);
+                System.exit(0);
             }
-            System.exit(0);
+
+            Intent svc = new Intent(ctx, NotifyService.class);
+            svc.putExtra(NotifyHelper.EXTRA_PACKAGE, pkg);
+            svc.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(svc);
+            } else {
+                ctx.startService(svc);
+            }
+
+            if (NotifyHelper.waitForBlockedNotificationActive(nm, pkg)) {
+                System.out.println("NotifyRunner: posted for " + pkg);
+                System.exit(0);
+            }
+            System.err.println("NotifyRunner: service started but notification not active");
+            System.exit(1);
         } catch (Throwable t) {
             Throwable c = t.getCause() != null ? t.getCause() : t;
             System.err.println("NotifyRunner: " + c.getClass().getSimpleName() + ": " + c.getMessage());
@@ -60,6 +73,9 @@ public final class NotifyRunner {
             Process p = Runtime.getRuntime().exec(new String[]{
                     "/system/bin/pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS"});
             p.waitFor();
+            Process p2 = Runtime.getRuntime().exec(new String[]{
+                    "/system/bin/cmd", "appops", "set", PACKAGE, "POST_NOTIFICATION", "allow"});
+            p2.waitFor();
         } catch (Throwable ignored) {
             /* best-effort */
         }

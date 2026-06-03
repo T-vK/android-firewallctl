@@ -8,6 +8,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -25,14 +26,14 @@ public final class NotifyHelper {
     public static final String EXTRA_KIND = "kind";
     public static final String EXTRA_WHEN = "when";
     public static final String KIND_INSTALL_DETECT = "install_detect";
+    /** Warmup: create channel only (no user-visible notification). */
+    public static final String PACKAGE_CHANNEL_INIT = "__firewall_notify_init__";
 
-    /** v2 channel: heads-up, sound, bypass DND; user may need to re-enable after upgrade. */
-    private static final String CHANNEL_ID = "firewall_block_alert_v3";
+    private static final String CHANNEL_ID = "firewall_block_alert_v4";
     private static final String CHANNEL_NAME = "New app blocked (urgent)";
     public static final int NOTIFICATION_ID = 0x464444;
     private static final int INSTALL_DETECT_NOTIFICATION_ID = 0x464445;
     private static final int FLAG_IMMUTABLE = 0x04000000;
-
 
     private static int smallIcon(Context context) {
         int id = context.getResources().getIdentifier(
@@ -45,6 +46,30 @@ public final class NotifyHelper {
             return appIcon;
         }
         return android.R.drawable.ic_dialog_info;
+    }
+
+    public static void ensureChannel(NotificationManager nm) {
+        if (nm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+        int importance = channelImportance();
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID, CHANNEL_NAME, importance);
+        channel.setDescription("Immediate alert when a new app is blocked by default");
+        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        channel.enableVibration(true);
+        channel.enableLights(true);
+        channel.setBypassDnd(true);
+        Uri sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        if (sound != null) {
+            channel.setSound(
+                    sound,
+                    new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build());
+        }
+        nm.createNotificationChannel(channel);
     }
 
     /** True if our block notification is in the active set (posted, not dropped). */
@@ -64,7 +89,80 @@ public final class NotifyHelper {
         return false;
     }
 
+    public static boolean waitForBlockedNotificationActive(NotificationManager nm, String pkg) {
+        for (int i = 0; i < 25; i++) {
+            if (isBlockedNotificationActive(nm, pkg)) {
+                return true;
+            }
+            try {
+                Thread.sleep(80L);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
     private NotifyHelper() {
+    }
+
+    /** Build block alert; falls back to a minimal notification if PendingIntents fail. */
+    public static Notification buildBlockedNotification(Context context, String pkg) {
+        if (pkg == null || pkg.isEmpty()) {
+            return null;
+        }
+        NotificationManager nm =
+                (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) {
+            return null;
+        }
+        ensureChannel(nm);
+
+        String label = resolveAppLabel(context, pkg);
+        String title = "Internet blocked for new app";
+        String text = label + " — network access was disabled by default.";
+        int iconId = smallIcon(context);
+
+        try {
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
+            PendingIntent settingsPi = PendingIntent.getActivity(
+                    context, pkg.hashCode() + 1, openNetworkIntent(context, pkg), flags);
+            PendingIntent allowPi = PendingIntent.getActivity(
+                    context, pkg.hashCode() + 2, allowIntent(context, pkg), flags);
+
+            return new Notification.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(iconId)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(new Notification.BigTextStyle().bigText(
+                            text + "\n\nPackage: " + pkg))
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC)
+                    .setOngoing(true)
+                    .setAutoCancel(false)
+                    .setOnlyAlertOnce(false)
+                    .setDefaults(Notification.DEFAULT_ALL)
+                    .setContentIntent(settingsPi)
+                    .addAction(new Notification.Action.Builder(iconId, "Allow network", allowPi)
+                            .build())
+                    .addAction(new Notification.Action.Builder(iconId, "Network settings", settingsPi)
+                            .build())
+                    .build();
+        } catch (Throwable e) {
+            System.err.println("FirewallNotify: full notification build failed: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return new Notification.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(iconId)
+                    .setContentTitle(title)
+                    .setContentText(text + "\n\nPackage: " + pkg)
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC)
+                    .setDefaults(Notification.DEFAULT_ALL)
+                    .build();
+        }
     }
 
     public static void showBlocked(Context context, String pkg) {
@@ -76,41 +174,12 @@ public final class NotifyHelper {
         if (nm == null) {
             return;
         }
-        ensureChannel(nm);
-
-        String label = resolveAppLabel(context, pkg);
-        String title = "Internet blocked for new app";
-        String text = label + " — network access was disabled by default.";
-        String tag = notificationTag(pkg);
-
-        int iconId = smallIcon(context);
-
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
-        PendingIntent settingsPi = PendingIntent.getActivity(
-                context, pkg.hashCode() + 1, openNetworkIntent(context, pkg), flags);
-        PendingIntent allowPi = PendingIntent.getActivity(
-                context, pkg.hashCode() + 2, allowIntent(context, pkg), flags);
-
-        Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID)
-                .setSmallIcon(iconId)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setStyle(new Notification.BigTextStyle().bigText(
-                        text + "\n\nPackage: " + pkg))
-                .setPriority(Notification.PRIORITY_MAX)
-                .setCategory(Notification.CATEGORY_ALARM)
-                .setVisibility(Notification.VISIBILITY_PUBLIC)
-                .setOngoing(true)
-                .setAutoCancel(false)
-                .setOnlyAlertOnce(false)
-                .setDefaults(Notification.DEFAULT_ALL)
-                .setContentIntent(settingsPi)
-                .addAction(new Notification.Action.Builder(iconId, "Allow network", allowPi).build())
-                .addAction(new Notification.Action.Builder(iconId, "Network settings", settingsPi)
-                        .build());
-
+        Notification notification = buildBlockedNotification(context, pkg);
+        if (notification == null) {
+            return;
+        }
         try {
-            nm.notify(tag, NOTIFICATION_ID, builder.build());
+            nm.notify(notificationTag(pkg), NOTIFICATION_ID, notification);
         } catch (Throwable e) {
             System.err.println("FirewallNotify: notify failed: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -118,7 +187,34 @@ public final class NotifyHelper {
         }
     }
 
-    /** Visible notification for install-detect benchmark (not a block alert). */
+    /** Post via startForeground so the system actually shows the notification. */
+    public static void showBlockedForeground(Service service, String pkg) {
+        if (service == null || pkg == null || pkg.isEmpty()) {
+            return;
+        }
+        if (PACKAGE_CHANNEL_INIT.equals(pkg)) {
+            Context app = service.getApplicationContext();
+            NotificationManager nm =
+                    (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+            ensureChannel(nm);
+            return;
+        }
+        Context app = service.getApplicationContext();
+        Notification notification = buildBlockedNotification(app, pkg);
+        if (notification == null) {
+            throw new RuntimeException("buildBlockedNotification returned null");
+        }
+        service.startForeground(NOTIFICATION_ID, notification);
+        NotificationManager nm =
+                (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.notify(notificationTag(pkg), NOTIFICATION_ID, notification);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            service.stopForeground(Service.STOP_FOREGROUND_DETACH);
+        } else {
+            service.stopForeground(false);
+        }
+    }
+
     public static void showInstallDetected(Context context, String pkg, String when) {
         if (pkg == null || pkg.isEmpty()) {
             return;
@@ -135,7 +231,6 @@ public final class NotifyHelper {
         String time = when != null && !when.isEmpty() ? when : "";
         String text = time.isEmpty() ? label : time + " - " + label;
         String tag = "install_detect_" + pkg;
-
         int iconId = smallIcon(context);
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE;
@@ -150,7 +245,7 @@ public final class NotifyHelper {
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(text + "\n\nPackage: " + pkg))
-                .setCategory(Notification.CATEGORY_ALARM)
+                .setCategory(Notification.CATEGORY_STATUS)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
                 .setContentIntent(settingsPi);
@@ -180,30 +275,6 @@ public final class NotifyHelper {
         return "firewall_default_deny_" + pkg;
     }
 
-    private static void ensureChannel(NotificationManager nm) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            return;
-        }
-        int importance = channelImportance();
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, CHANNEL_NAME, importance);
-        channel.setDescription("Immediate alert when a new app is blocked by default");
-        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-        channel.enableVibration(true);
-        channel.enableLights(true);
-        channel.setBypassDnd(true);
-        Uri sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
-        if (sound != null) {
-            channel.setSound(
-                    sound,
-                    new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build());
-        }
-        nm.createNotificationChannel(channel);
-    }
-
     private static int channelImportance() {
         if (Build.VERSION.SDK_INT >= 34) {
             try {
@@ -229,7 +300,6 @@ public final class NotifyHelper {
         return intent;
     }
 
-    /** Opens per-app Mobile data and Wi-Fi / data usage (not app-info parent screen). */
     static Intent buildDataSettingsIntent(Context context, String pkg) {
         Uri packageUri = Uri.parse("package:" + pkg);
         ComponentName appDataUsage = new ComponentName(

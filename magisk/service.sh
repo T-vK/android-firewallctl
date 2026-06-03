@@ -70,6 +70,15 @@ ensure_notify_app() {
 
 ensure_notify_app
 
+if [ -x /system/bin/cmd ]; then
+    cmd notification unsuspend_package app.firewall.notify >>"$LOGFILE" 2>&1 || true
+    cmd appops set app.firewall.notify POST_NOTIFICATION allow >>"$LOGFILE" 2>&1 || true
+fi
+# Create notification channel (no visible notification).
+am start-foreground-service --user 0 -n app.firewall.notify/.NotifyService \
+    --es package __firewall_notify_init__ >>"$LOGFILE" 2>&1 || true
+
+
 if [ -f "$PIDFILE" ]; then
     oldpid=$(cat "$PIDFILE" 2>/dev/null)
     if [ -n "$oldpid" ]; then
